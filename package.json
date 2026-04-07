@@ -7,7 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "next dev",
     "dev:mastra": "mastra dev",
-    "build": "rm -rf .next && NODE_ENV=production next build",
+    "build": "NODE_ENV=production next build",
     "start": "NODE_ENV=production next start",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
