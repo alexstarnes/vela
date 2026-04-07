@@ -8,3 +8,14 @@ dist
 *.db-*
 .netlify
 .vercel
+
+# Next.js
+.next/
+out/
+
+# Environment files
+.env.local
+.env.production
+
+# pnpm lock
+!pnpm-lock.yaml

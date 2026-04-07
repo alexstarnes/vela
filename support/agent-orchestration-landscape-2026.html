@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Orchestration Landscape 2026</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #111111;
+    --surface-2: #191919;
+    --border: #222222;
+    --text: #f0ede8;
+    --text-dim: #888;
+    --text-dimmer: #444;
+    --accent: #f5a623;
+    --accent-dim: rgba(245,166,35,0.12);
+    --accent-glow: rgba(245,166,35,0.05);
+    --green: #4ade80;
+    --green-dim: rgba(74,222,128,0.1);
+    --red: #f87171;
+    --red-dim: rgba(248,113,113,0.1);
+    --blue: #60a5fa;
+    --blue-dim: rgba(96,165,250,0.1);
+    --purple: #a78bfa;
+    --purple-dim: rgba(167,139,250,0.1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Instrument Sans', sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    min-height: 100vh;
+  }
+
+  /* NOISE OVERLAY */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 999;
+    opacity: 0.4;
+  }
+
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 32px;
+  }
+
+  /* HEADER */
+  header {
+    padding: 80px 0 60px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+
+  header::after {
+    content: '';
+    position: absolute;
+    top: -100px;
+    right: -100px;
+    width: 400px;
+    height: 400px;
+    background: radial-gradient(circle, rgba(245,166,35,0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .eyebrow::before {
+    content: '';
+    display: block;
+    width: 24px;
+    height: 1px;
+    background: var(--accent);
+  }
+
+  h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(36px, 5vw, 58px);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin-bottom: 20px;
+  }
+
+  h1 em {
+    font-style: normal;
+    color: var(--accent);
+  }
+
+  .header-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-top: 28px;
+  }
+
+  .header-meta span {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* TOC */
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    padding: 24px 28px;
+    margin: 48px 0;
+    border-radius: 0 4px 4px 0;
+  }
+
+  .toc-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+
+  .toc ol {
+    padding-left: 18px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 32px;
+  }
+
+  .toc li { color: var(--text-dim); font-size: 13px; }
+  .toc a { color: var(--text-dim); text-decoration: none; transition: color 0.2s; }
+  .toc a:hover { color: var(--accent); }
+
+  /* SECTIONS */
+  section {
+    padding: 64px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h2 {
+    font-family: 'Syne', sans-serif;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+
+  .section-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--accent);
+    font-weight: 400;
+  }
+
+  h3 {
+    font-family: 'Syne', sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 36px 0 12px;
+    color: var(--text);
+  }
+
+  p { margin-bottom: 16px; color: var(--text); }
+  p:last-child { margin-bottom: 0; }
+
+  .lead {
+    font-size: 17px;
+    color: var(--text-dim);
+    margin-bottom: 36px;
+    line-height: 1.8;
+  }
+
+  /* CALLOUT */
+  .callout {
+    background: var(--accent-dim);
+    border: 1px solid rgba(245,166,35,0.25);
+    border-radius: 6px;
+    padding: 18px 22px;
+    margin: 28px 0;
+    font-size: 14px;
+    color: var(--text);
+  }
+
+  .callout strong { color: var(--accent); }
+
+  /* FRAMEWORK CARDS */
+  .framework-grid {
+    display: grid;
+    gap: 16px;
+    margin: 28px 0;
+  }
+
+  .framework-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    position: relative;
+    transition: border-color 0.2s;
+  }
+
+  .framework-card:hover { border-color: #333; }
+
+  .framework-card.winner {
+    border-color: rgba(245,166,35,0.35);
+    background: linear-gradient(135deg, var(--surface) 0%, rgba(245,166,35,0.04) 100%);
+  }
+
+  .framework-card .badge {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 100px;
+  }
+
+  .badge.production { background: var(--green-dim); color: var(--green); border: 1px solid rgba(74,222,128,0.2); }
+  .badge.prototype { background: var(--blue-dim); color: var(--blue); border: 1px solid rgba(96,165,250,0.2); }
+  .badge.enterprise { background: var(--purple-dim); color: var(--purple); border: 1px solid rgba(167,139,250,0.2); }
+  .badge.ts-native { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(245,166,35,0.2); }
+  .badge.experimental { background: rgba(248,113,113,0.1); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
+
+  .fw-name {
+    font-family: 'Syne', sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .fw-tagline {
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+    font-style: italic;
+  }
+
+  .fw-desc { font-size: 14px; line-height: 1.7; margin-bottom: 16px; }
+
+  .fw-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  .pill {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 100px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+
+  /* PROS / CONS */
+  .pros-cons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 14px;
+    font-size: 13px;
+  }
+
+  .pros, .cons {
+    padding: 12px 16px;
+    border-radius: 6px;
+  }
+
+  .pros { background: var(--green-dim); border: 1px solid rgba(74,222,128,0.15); }
+  .cons { background: var(--red-dim); border: 1px solid rgba(248,113,113,0.15); }
+
+  .pros .label { color: var(--green); font-weight: 600; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+  .cons .label { color: var(--red); font-weight: 600; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+
+  .pros ul, .cons ul { padding-left: 16px; }
+  .pros li, .cons li { margin-bottom: 4px; line-height: 1.5; }
+  .pros li { color: rgba(240,237,232,0.8); }
+  .cons li { color: rgba(240,237,232,0.8); }
+
+  /* COMPARISON TABLE */
+  .table-wrap {
+    overflow-x: auto;
+    margin: 28px 0;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  thead {
+    background: var(--surface-2);
+  }
+
+  th {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.01); }
+
+  td:first-child {
+    font-family: 'Syne', sans-serif;
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+  }
+
+  .check { color: var(--green); }
+  .x { color: var(--red); }
+  .partial { color: var(--accent); }
+
+  /* PROTOCOL CARDS */
+  .protocol-stack {
+    display: grid;
+    gap: 12px;
+    margin: 28px 0;
+  }
+
+  .protocol-card {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .protocol-accent {
+    width: 4px;
+    background: var(--accent);
+  }
+
+  .protocol-accent.mcp { background: #60a5fa; }
+  .protocol-accent.a2a { background: #4ade80; }
+  .protocol-accent.anp { background: #a78bfa; }
+
+  .protocol-body { padding: 18px 22px; }
+  .protocol-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .protocol-name .proto-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 100px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+
+  .protocol-desc { font-size: 13px; line-height: 1.6; color: rgba(240,237,232,0.8); }
+
+  /* KEY FEATURES */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 28px 0;
+  }
+
+  .feature-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+
+  .feature-item.critical {
+    border-color: rgba(245,166,35,0.3);
+    background: linear-gradient(135deg, var(--surface), var(--accent-glow));
+  }
+
+  .feature-icon {
+    font-size: 20px;
+    margin-bottom: 10px;
+  }
+
+  .feature-name {
+    font-family: 'Syne', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  .feature-desc { font-size: 13px; color: rgba(240,237,232,0.75); line-height: 1.6; }
+
+  /* VERDICT */
+  .verdict-box {
+    background: linear-gradient(135deg, var(--surface), rgba(245,166,35,0.08));
+    border: 1px solid rgba(245,166,35,0.3);
+    border-radius: 12px;
+    padding: 32px;
+    margin: 28px 0;
+  }
+
+  .verdict-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 22px;
+    font-weight: 800;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+
+  /* STACK RECOMMENDATION */
+  .stack-rec {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin: 20px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 2;
+  }
+
+  .stack-rec .layer {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .stack-rec .layer:last-child { border-bottom: none; }
+
+  .layer-label {
+    color: var(--accent);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    min-width: 90px;
+  }
+
+  .layer-value { color: var(--text); }
+  .layer-dim { color: var(--text-dim); font-size: 11px; margin-left: 8px; }
+
+  /* FOOTER */
+  footer {
+    padding: 48px 0;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dimmer);
+  }
+
+  /* DIVIDER */
+  .divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border), transparent);
+    margin: 40px 0;
+  }
+
+  /* INLINE CODE */
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    background: var(--surface-2);
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: var(--accent);
+  }
+
+  ul.body-list {
+    padding-left: 20px;
+    margin: 14px 0;
+  }
+
+  ul.body-list li {
+    margin-bottom: 8px;
+    color: rgba(240,237,232,0.85);
+    font-size: 14px;
+  }
+
+  .text-accent { color: var(--accent); }
+  .text-dim { color: var(--text-dim); }
+
+  @media (max-width: 640px) {
+    .toc ol { grid-template-columns: 1fr; }
+    .feature-grid { grid-template-columns: 1fr; }
+    .pros-cons { grid-template-columns: 1fr; }
+    h1 { font-size: 32px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <header>
+    <div class="eyebrow">Deep Research Report</div>
+    <h1>Agent Orchestration<br><em>Landscape 2026</em></h1>
+    <p class="lead" style="margin-top: 20px; margin-bottom: 0;">A comprehensive analysis of the frameworks, protocols, key features, and architectural patterns you need to know before building your own orchestration tool.</p>
+    <div class="header-meta">
+      <span>📅 April 2026</span>
+      <span>🔍 Sources: 30+ articles &amp; docs</span>
+      <span>🎯 Purpose: Build your own tool</span>
+    </div>
+  </header>
+
+  <nav>
+    <div class="toc">
+      <div class="toc-title">Contents</div>
+      <ol>
+        <li><a href="#landscape">The Landscape Today</a></li>
+        <li><a href="#frameworks">Major Frameworks Compared</a></li>
+        <li><a href="#protocols">Protocols (MCP, A2A)</a></li>
+        <li><a href="#key-features">Key Features to Build</a></li>
+        <li><a href="#patterns">Architecture Patterns</a></li>
+        <li><a href="#pitfalls">Common Failure Modes</a></li>
+        <li><a href="#verdict">Verdict: Your Build Plan</a></li>
+      </ol>
+    </div>
+  </nav>
+
+  <!-- SECTION 1 -->
+  <section id="landscape">
+    <h2><span class="section-num">01</span> The Landscape Today</h2>
+    <p class="lead">Agent orchestration went from a research curiosity to a production requirement in roughly 18 months. The field has consolidated around a few clear patterns, and 2026 is the first year where frameworks have genuine battle-testing behind them.</p>
+
+    <p>The core insight that everything else follows from: <strong>orchestration is not about the AI models — it's about the infrastructure around them.</strong> State persistence, coordination primitives, failure recovery, observability, and cost controls are what separate a demo from something you'd actually trust to run at 3am.</p>
+
+    <p>Three categories of players have emerged:</p>
+
+    <ul class="body-list">
+      <li><strong>Framework libraries</strong> — code you pull into your own app (LangGraph, CrewAI, Mastra, AutoGen). You own the deployment.</li>
+      <li><strong>Orchestration platforms</strong> — opinionated hosted or self-hosted systems that define the whole mental model (Paperclip, n8n, Dify). Less flexibility, faster setup.</li>
+      <li><strong>Enterprise suites</strong> — IBM watsonx, Google ADK + Vertex, Microsoft Agent Framework 1.0. For org-scale compliance requirements.</li>
+    </ul>
+
+    <div class="callout">
+      <strong>The headline finding:</strong> For a TypeScript developer building a custom tool for personal/project use, the right answer in 2026 is to build on <strong>Mastra</strong> (TypeScript-native, batteries included) or roll your own with direct Anthropic SDK calls and a Postgres state store. You don't need Python framework complexity.
+    </div>
+  </section>
+
+  <!-- SECTION 2 -->
+  <section id="frameworks">
+    <h2><span class="section-num">02</span> Major Frameworks Compared</h2>
+    <p class="lead">Six frameworks dominate production conversations in 2026. Here's the honest breakdown of each.</p>
+
+    <div class="framework-grid">
+
+      <!-- LangGraph -->
+      <div class="framework-card winner">
+        <div class="badge production">Production King</div>
+        <div class="fw-name">LangGraph</div>
+        <div class="fw-tagline">Graph-based state machines with time-travel debugging</div>
+        <div class="fw-desc">The most battle-tested framework for complex, stateful multi-agent workflows. Models agents as nodes in a directed graph with explicit state management. Every state transition is persisted — enabling checkpoint-resume, human-in-the-loop approvals, and mid-execution failure recovery. Used by Klarna, Uber, and J.P. Morgan.</div>
+        <div class="pros-cons">
+          <div class="pros"><div class="label">✓ Strengths</div><ul><li>Built-in checkpointing + time travel debug</li><li>Best observability via LangSmith</li><li>Model-agnostic</li><li>Complex branching logic</li></ul></div>
+          <div class="cons"><div class="label">✗ Weaknesses</div><ul><li>Steep learning curve, verbose boilerplate</li><li>Python primary (JS port exists)</li><li>Overkill for simple flows</li><li>Poor out-of-box observability</li></ul></div>
+        </div>
+        <div class="fw-meta">
+          <span class="pill">Python / JS</span>
+          <span class="pill">MIT License</span>
+          <span class="pill">Checkpointing</span>
+          <span class="pill">Graph execution</span>
+          <span class="pill">LangSmith observability</span>
+        </div>
+      </div>
+
+      <!-- CrewAI -->
+      <div class="framework-card">
+        <div class="badge prototype">Best Prototype Speed</div>
+        <div class="fw-name">CrewAI</div>
+        <div class="fw-tagline">Role-based agent teams, 20 lines to working prototype</div>
+        <div class="fw-desc">Models multi-agent systems like a human team: agents have roles, backstories, goals, and tools. The fastest path from idea to working prototype. 12 million+ daily executions in production across industries. Often used as a starting point before migrating to LangGraph when production requirements demand more control.</div>
+        <div class="pros-cons">
+          <div class="pros"><div class="label">✓ Strengths</div><ul><li>Lowest learning curve</li><li>Intuitive role-based mental model</li><li>Good for rapid iteration</li><li>A2A protocol support added</li></ul></div>
+          <div class="cons"><div class="label">✗ Weaknesses</div><ul><li>No built-in checkpointing</li><li>Poor logging / debugging</li><li>Black-box internals</li><li>Teams often migrate away at scale</li></ul></div>
+        </div>
+        <div class="fw-meta">
+          <span class="pill">Python</span>
+          <span class="pill">MIT License</span>
+          <span class="pill">Role-based</span>
+          <span class="pill">Sequential / Parallel</span>
+        </div>
+      </div>
+
+      <!-- Mastra -->
+      <div class="framework-card winner">
+        <div class="badge ts-native">TypeScript Native ★</div>
+        <div class="fw-name">Mastra</div>
+        <div class="fw-tagline">The batteries-included TypeScript agent framework</div>
+        <div class="fw-desc">Built by the Gatsby team (YC W25, $13M funding). The first serious TypeScript-native framework designed from the ground up for the JS ecosystem — not a Python port. 22k+ GitHub stars, 300k+ weekly npm downloads, hit 1.0 in January 2026. Integrates with Next.js, Express, Hono. Includes agents, workflows, memory, RAG, MCP, evals, observability, and a local Studio debugger out of the box.</div>
+        <div class="pros-cons">
+          <div class="pros"><div class="label">✓ Strengths</div><ul><li>TypeScript-native, full type safety</li><li>Next.js / React integration</li><li>Batteries included (evals, tracing, Studio)</li><li>3,300+ models via unified router</li></ul></div>
+          <div class="cons"><div class="label">✗ Weaknesses</div><ul><li>Enterprise features behind paid license</li><li>Smaller community than LangGraph</li><li>Relatively new (1.0 Jan 2026)</li></ul></div>
+        </div>
+        <div class="fw-meta">
+          <span class="pill">TypeScript</span>
+          <span class="pill">Apache 2.0 core</span>
+          <span class="pill">MCP native</span>
+          <span class="pill">Graph workflows</span>
+          <span class="pill">Built-in Studio</span>
+          <span class="pill">Persistent memory</span>
+        </div>
+      </div>
+
+      <!-- AutoGen / Microsoft Agent Framework -->
+      <div class="framework-card">
+        <div class="badge enterprise">Enterprise / MS Ecosystem</div>
+        <div class="fw-name">Microsoft Agent Framework 1.0</div>
+        <div class="fw-tagline">AutoGen + Semantic Kernel merged into one production SDK</div>
+        <div class="fw-desc">Microsoft merged AutoGen and Semantic Kernel in October 2025; hit 1.0 GA in April 2026. AutoGen (now in maintenance mode) is still widely used — agents communicate via conversational GroupChat patterns. The new Agent Framework adds graph-based workflows, pluggable memory backends (Redis, Mem0, Neo4j), checkpointing, and streaming. Available in Python and .NET.</div>
+        <div class="pros-cons">
+          <div class="pros"><div class="label">✓ Strengths</div><ul><li>Best for conversational multi-agent</li><li>Human-in-the-loop first class</li><li>Strong .NET / Python support</li><li>Enterprise governance built in</li></ul></div>
+          <div class="cons"><div class="label">✗ Weaknesses</div><ul><li>AutoGen creates runaway loops</li><li>Token-expensive multi-turn patterns</li><li>Heavy Azure dependency</li><li>AutoGen original now maintenance-mode</li></ul></div>
+        </div>
+        <div class="fw-meta">
+          <span class="pill">Python / .NET</span>
+          <span class="pill">MIT License</span>
+          <span class="pill">GroupChat model</span>
+          <span class="pill">Event-driven</span>
+        </div>
+      </div>
+
+      <!-- OpenAI Agents SDK -->
+      <div class="framework-card">
+        <div class="badge prototype">Minimal + Clean</div>
+        <div class="fw-name">OpenAI Agents SDK</div>
+        <div class="fw-tagline">Thin handoff architecture, fast prototype-to-production</div>
+        <div class="fw-desc">Replaced the experimental Swarm framework. Agents are lightweight; orchestration happens through explicit handoffs between specialists. Guardrails run in parallel with execution. Uses plain Python rather than custom DSLs — intentionally minimal. Sessions provide persistent memory within an agent loop. Locked to OpenAI models.</div>
+        <div class="pros-cons">
+          <div class="pros"><div class="label">✓ Strengths</div><ul><li>Clean, low-boilerplate API</li><li>Built-in tracing and guardrails</li><li>Fastest path for OpenAI users</li></ul></div>
+          <div class="cons"><div class="label">✗ Weaknesses</div><ul><li>OpenAI models only</li><li>Ephemeral context by default</li><li>Less control over orchestration</li></ul></div>
+        </div>
+        <div class="fw-meta">
+          <span class="pill">Python</span>
+          <span class="pill">OpenAI only</span>
+          <span class="pill">Handoff pattern</span>
+        </div>
+      </div>
+
+      <!-- Google ADK -->
+      <div class="framework-card">
+        <div class="badge experimental">Newest / Maturing</div>
+        <div class="fw-name">Google ADK</div>
+        <div class="fw-tagline">Hierarchical tree, A2A native, multi-language</div>
+        <div class="fw-desc">Launched April 2025. Model-agnostic, multi-language (Python, Java, Go, TypeScript). Hierarchical agent tree where a root agent delegates to sub-agents. Native A2A protocol support — ADK agents can discover and invoke agents from other frameworks. Deep Vertex AI and Google Cloud integration. The ecosystem is newest and thinnest, but growing fast.</div>
+        <div class="pros-cons">
+          <div class="pros"><div class="label">✓ Strengths</div><ul><li>Native A2A interoperability</li><li>Multi-language support</li><li>Multimodal (audio, video, images)</li><li>Model-agnostic by design</li></ul></div>
+          <div class="cons"><div class="label">✗ Weaknesses</div><ul><li>Newest, fewest community resources</li><li>Optimized for Google/Gemini ecosystem</li><li>Managed infra = less control</li></ul></div>
+        </div>
+        <div class="fw-meta">
+          <span class="pill">Python / Java / Go / TS</span>
+          <span class="pill">Apache 2.0</span>
+          <span class="pill">A2A native</span>
+          <span class="pill">Vertex AI</span>
+        </div>
+      </div>
+
+    </div>
+
+    <h3>Side-by-Side Comparison</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Framework</th>
+            <th>Model</th>
+            <th>Language</th>
+            <th>State Persistence</th>
+            <th>Checkpointing</th>
+            <th>MCP</th>
+            <th>Learning Curve</th>
+            <th>Best For</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>LangGraph</td>
+            <td>Graph DAG</td>
+            <td>Python/JS</td>
+            <td><span class="check">✓</span> Postgres/Redis</td>
+            <td><span class="check">✓</span> Built-in</td>
+            <td><span class="partial">~</span> Community</td>
+            <td>Medium-High</td>
+            <td>Complex production flows</td>
+          </tr>
+          <tr>
+            <td>CrewAI</td>
+            <td>Role-based crews</td>
+            <td>Python</td>
+            <td><span class="partial">~</span> Sequential outputs</td>
+            <td><span class="x">✗</span> None</td>
+            <td><span class="partial">~</span> Via Composio</td>
+            <td>Low</td>
+            <td>Rapid prototyping</td>
+          </tr>
+          <tr>
+            <td><strong>Mastra</strong></td>
+            <td>Graph workflows</td>
+            <td><strong>TypeScript</strong></td>
+            <td><span class="check">✓</span> Postgres/LibSQL</td>
+            <td><span class="check">✓</span> Built-in</td>
+            <td><span class="check">✓</span> Native</td>
+            <td>Low-Medium</td>
+            <td>TypeScript teams</td>
+          </tr>
+          <tr>
+            <td>AutoGen/MS</td>
+            <td>GroupChat / Graph</td>
+            <td>Python/.NET</td>
+            <td><span class="check">✓</span> Pluggable</td>
+            <td><span class="check">✓</span> 1.0</td>
+            <td><span class="partial">~</span> Extensions</td>
+            <td>Medium</td>
+            <td>Conversational / enterprise</td>
+          </tr>
+          <tr>
+            <td>OpenAI SDK</td>
+            <td>Handoff pattern</td>
+            <td>Python</td>
+            <td><span class="partial">~</span> Session-scoped</td>
+            <td><span class="x">✗</span> Ephemeral</td>
+            <td><span class="x">✗</span> No</td>
+            <td>Low</td>
+            <td>OpenAI-only stacks</td>
+          </tr>
+          <tr>
+            <td>Google ADK</td>
+            <td>Hierarchical tree</td>
+            <td>Multi</td>
+            <td><span class="check">✓</span> Vertex managed</td>
+            <td><span class="partial">~</span> Session state</td>
+            <td><span class="check">✓</span> Native</td>
+            <td>Medium</td>
+            <td>Google Cloud / multimodal</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- SECTION 3 -->
+  <section id="protocols">
+    <h2><span class="section-num">03</span> The Protocol Stack (MCP, A2A, and Beyond)</h2>
+    <p class="lead">The biggest architectural shift of 2025–2026 is the emergence of standardized communication protocols for agents. These are not framework features — they're interoperability standards that work across any framework.</p>
+
+    <p>The protocol stack has three clear layers. Build with these in mind and your system stays modular as the ecosystem evolves.</p>
+
+    <div class="protocol-stack">
+      <div class="protocol-card">
+        <div class="protocol-accent mcp"></div>
+        <div class="protocol-body">
+          <div class="protocol-name">MCP — Model Context Protocol <span class="proto-badge">Tool Layer</span> <span class="proto-badge" style="background:rgba(96,165,250,0.1); color: #60a5fa; border-color: rgba(96,165,250,0.2);">97M+ monthly downloads</span></div>
+          <div class="protocol-desc">Created by Anthropic. The de facto standard for how agents access tools and external data. An agent-to-tool protocol — MCP servers expose callable functions (read a database, search the web, write a file). Think of it as standardized USB-C for AI tools. <strong>In 2026, if you write custom HTTP endpoints for tool access instead of MCP, you're creating technical debt.</strong> The TypeScript and Python SDKs are mature, and there are hundreds of community MCP servers already built.</div>
+        </div>
+      </div>
+      <div class="protocol-card">
+        <div class="protocol-accent a2a"></div>
+        <div class="protocol-body">
+          <div class="protocol-name">A2A — Agent-to-Agent Protocol <span class="proto-badge">Agent Coordination Layer</span> <span class="proto-badge" style="background:rgba(74,222,128,0.1); color: #4ade80; border-color: rgba(74,222,128,0.2);">Linux Foundation</span></div>
+          <div class="protocol-desc">Originally created by Google, now co-governed by OpenAI, Anthropic, Microsoft, AWS, and others under the Agentic AI Foundation. Standardizes how agents discover each other, delegate tasks, and communicate — regardless of which framework built them. Each agent publishes an "Agent Card" at a well-known URL describing its capabilities. A2A is essentially HTTP for agent-to-agent communication. IBM's ACP merged into A2A in August 2025 — if you were watching both, A2A won.</div>
+        </div>
+      </div>
+      <div class="protocol-card">
+        <div class="protocol-accent anp"></div>
+        <div class="protocol-body">
+          <div class="protocol-name">ANP — Agent Network Protocol <span class="proto-badge">Decentralized / Peer-to-Peer</span></div>
+          <div class="protocol-desc">For when agents from different organizations need to discover and communicate without a central authority. Uses W3C Decentralized Identifiers (DIDs) and JSON-LD. More relevant for open internet agent ecosystems than personal orchestration tools — but worth knowing about as the space evolves.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>Practical rule:</strong> Start with MCP for tool access (connect your agents to Postgres, file system, APIs). Add A2A when you need agents from different runtimes to delegate tasks to each other. You probably don't need ANP for your personal tool.
+    </div>
+
+    <p>The clean mental model: <strong>MCP = agent talking to tools. A2A = agent talking to other agents.</strong> They're complementary, not competing. A production stack in 2026 will use both.</p>
+  </section>
+
+  <!-- SECTION 4 -->
+  <section id="key-features">
+    <h2><span class="section-num">04</span> Key Features to Build</h2>
+    <p class="lead">Based on what's emerged from real production deployments, these are the non-negotiable capabilities for a serious orchestration tool — ranked by importance for your use case.</p>
+
+    <div class="feature-grid">
+      <div class="feature-item critical">
+        <div class="feature-icon">🗄️</div>
+        <div class="feature-name">State Persistence &amp; Checkpointing</div>
+        <div class="feature-desc">The single most important architectural decision. Agents must resume context across sessions, survive crashes, and support human-in-the-loop approvals. Without this, you're rebuilding context from scratch on every heartbeat — expensive and fragile. Use Postgres. Append-only event log per task.</div>
+      </div>
+      <div class="feature-item critical">
+        <div class="feature-icon">🧠</div>
+        <div class="feature-name">Goal Ancestry / Context Injection</div>
+        <div class="feature-desc">Every task needs to carry its full goal context (why this task exists, what project it belongs to, what company goal it serves). This is what Paperclip's SKILLS.md does — inject structured context at runtime so agents don't need to be individually prompted with background every time.</div>
+      </div>
+      <div class="feature-item critical">
+        <div class="feature-icon">💰</div>
+        <div class="feature-name">Budget Enforcement (Atomic)</div>
+        <div class="feature-desc">Per-agent monthly token budgets, enforced atomically at task checkout. Soft warning at 80%, hard stop at 100%. Track actual token usage via API response metadata. Without this, one runaway loop can exhaust your API quota overnight. Cost per task, per project, per agent — all queryable.</div>
+      </div>
+      <div class="feature-item critical">
+        <div class="feature-icon">⏰</div>
+        <div class="feature-name">Heartbeat / Scheduler</div>
+        <div class="feature-desc">Agents wake on a schedule, check their task queue, and act. Cron-based is fine to start. The scheduler should pass the agent its current task context, relevant skills, and goal ancestry. Agents should be able to signal "done", "blocked", or "needs human input" and the scheduler routes accordingly.</div>
+      </div>
+      <div class="feature-item">
+        <div class="feature-icon">🏢</div>
+        <div class="feature-name">Org Chart (Hierarchical Roles)</div>
+        <div class="feature-desc">Agents have roles, a boss, and reporting lines. A parent agent can delegate tasks to child agents. The org chart is just a tree relationship in your database: agent table with <code>parent_id</code>, <code>role</code>, <code>company_id</code>. Multi-company is just <code>company_id</code> scoping on every table.</div>
+      </div>
+      <div class="feature-item">
+        <div class="feature-icon">📋</div>
+        <div class="feature-name">Ticket / Task System</div>
+        <div class="feature-desc">Every unit of work is a ticket with: status state machine (open → in_progress → review → done), owner agent, thread of messages, tool call trace, and immutable audit log. This is what makes the system auditable and debuggable. The ticket IS the unit of coordination.</div>
+      </div>
+      <div class="feature-item">
+        <div class="feature-icon">🛡️</div>
+        <div class="feature-name">Governance Layer</div>
+        <div class="feature-desc">You as the "board" approve certain actions before they happen: hiring new agents, strategy changes above a certain scope, budget overrides. A simple approval queue in the UI. Agents surface decisions for human review rather than proceeding autonomously for high-stakes actions.</div>
+      </div>
+      <div class="feature-item">
+        <div class="feature-icon">📊</div>
+        <div class="feature-name">Observability &amp; Tracing</div>
+        <div class="feature-desc">Full tool-call tracing, per-step token logging, and a timeline of every agent decision. OpenTelemetry is the standard — even a basic implementation saves hours of debugging. LangSmith is excellent if you're using LangGraph. Mastra has it built in. For a custom build, structured JSON logs to Postgres is sufficient to start.</div>
+      </div>
+      <div class="feature-item">
+        <div class="feature-icon">🔌</div>
+        <div class="feature-name">Skills / Context Files</div>
+        <div class="feature-desc">Runtime-injected Markdown files that teach agents how to use your specific tools, workflows, and conventions — without retraining. Paperclip's SKILLS.md pattern is the right call here. Store skills per agent or per company, load them into context at heartbeat time.</div>
+      </div>
+      <div class="feature-item">
+        <div class="feature-icon">🔄</div>
+        <div class="feature-name">Loop Detection &amp; Circuit Breakers</div>
+        <div class="feature-desc">Every production deployment eventually gets an agent that loops endlessly or makes exponentially escalating tool calls. Required: max iterations per heartbeat, timeout per task, loop detection (same tool call with same params &gt;3x = blocked), and auto-pause with human notification.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 5 -->
+  <section id="patterns">
+    <h2><span class="section-num">05</span> Architecture Patterns That Work</h2>
+    <p class="lead">These are the patterns that appear consistently in production-grade systems. Not academic — pulled from real deployments.</p>
+
+    <h3>Model Tiering</h3>
+    <p>Use a fast, cheap model (Claude Haiku, GPT-4o-mini) for routing, triage, and simple tasks. Use a capable model (Claude Sonnet, GPT-4o) for complex reasoning. This reduces costs by 40–60% compared to running a single premium model on everything. Your orchestration layer should route to the right model based on task type — this is a scheduler-level decision, not an agent-level one.</p>
+
+    <h3>Stateless Agents, Stateful Orchestrator</h3>
+    <p>Agents themselves are stateless functions — they receive context, do work, return results. All state lives in the orchestrator (your Postgres). On each heartbeat, the orchestrator reconstructs agent context from stored state and injects it. This makes agents replaceable, debuggable, and horizontally scalable.</p>
+
+    <h3>Append-Only Event Sourcing for Tasks</h3>
+    <p>Never update task records in place. Every state transition, message, and tool call is an immutable event appended to a log. This gives you free audit trails, replay capability, and the ability to reconstruct any agent's view at any point in time. Schema: <code>task_events(id, task_id, event_type, payload, created_at)</code>.</p>
+
+    <h3>Atomic Task Checkout</h3>
+    <p>When an agent picks up a task, mark it as <code>in_progress</code> atomically using a database transaction with a row-level lock. This prevents two heartbeat instances from picking up the same task simultaneously — a subtle bug that causes duplicated work and corrupted state. Critical for any system running multiple concurrent agents.</p>
+
+    <h3>Human-in-the-Loop as a First-Class State</h3>
+    <p>Tasks should have a <code>waiting_for_human</code> status that pauses the heartbeat scheduler. When the human responds (via UI or approval queue), the task resumes with full context. Don't treat human approval as an exception path — model it explicitly in your state machine from day one.</p>
+
+    <div class="callout">
+      <strong>Architectural quote worth internalizing:</strong> "The best agent framework is the one your team can debug at 2am during a production incident. Fancy orchestration abstractions matter less than your ability to understand what went wrong when the agent does something unexpected." — Fordel Studios, 2026
+    </div>
+  </section>
+
+  <!-- SECTION 6 -->
+  <section id="pitfalls">
+    <h2><span class="section-num">06</span> Common Failure Modes</h2>
+    <p class="lead">These are the patterns that consistently break production agent systems. Know them before you build.</p>
+
+    <ul class="body-list">
+      <li><strong>Runaway loops.</strong> An agent calls the same tool repeatedly without making progress. Fix: max_iterations guard, per-step token budget, loop detection on repeated identical tool calls.</li>
+      <li><strong>Context explosion.</strong> Injecting full conversation history into every heartbeat gets expensive fast. Agents don't need the full thread — they need the current task, recent decisions, and goal context. Summarize aggressively.</li>
+      <li><strong>No checkpointing in production.</strong> Without a configured checkpoint store, a process crash loses all in-flight state. This is LangGraph's most common production failure mode. The fix: always configure a durable backend before deploying.</li>
+      <li><strong>Budget limits that don't account for tool calls.</strong> Token counts alone miss the cost of tool calls (especially web search, code execution). Track actual API cost in dollars, not just tokens.</li>
+      <li><strong>Inconsistent output schemas.</strong> Agents return free-form text when your orchestrator needs structured data. Fix: always define Pydantic / Zod output schemas for agent responses. Validate at the boundary.</li>
+      <li><strong>Tight coupling of business logic to framework.</strong> When you switch frameworks (and you will), your agent logic should survive. Keep domain code in plain functions, use the framework only for orchestration. This is the most underrated architectural discipline.</li>
+      <li><strong>Permission sprawl.</strong> Agent processes that have filesystem / terminal access carry the full permissions of the OS process. Budget limits in the orchestrator don't stop filesystem damage. Sandbox agent execution environments separately.</li>
+    </ul>
+  </section>
+
+  <!-- SECTION 7 -->
+  <section id="verdict">
+    <h2><span class="section-num">07</span> Verdict: Your Build Plan</h2>
+    <p class="lead">Given your stack (TypeScript, Next.js, Postgres, Anthropic SDK), here's exactly how I'd approach building your own lightweight orchestration tool.</p>
+
+    <div class="verdict-box">
+      <div class="verdict-title">The Recommendation</div>
+      <p>Build on top of <strong>Mastra</strong> rather than from scratch — it's TypeScript-native, integrates with Next.js, has MCP built in, handles memory/persistence, and has a local Studio debugger. It gives you 80% of what you need with none of the Python ecosystem overhead.</p>
+      <p style="margin-top: 12px;">If you want full ownership and simplicity, build the core yourself with direct Anthropic SDK + Postgres + node-cron. The concepts are simple; the framework complexity is mostly what's hard.</p>
+    </div>
+
+    <h3>Recommended Stack</h3>
+    <div class="stack-rec">
+      <div class="layer">
+        <span class="layer-label">UI</span>
+        <span class="layer-value">Next.js + React</span>
+        <span class="layer-dim">— you already know it</span>
+      </div>
+      <div class="layer">
+        <span class="layer-label">API</span>
+        <span class="layer-value">Next.js API routes or Hono</span>
+        <span class="layer-dim">— lightweight, TypeScript-native</span>
+      </div>
+      <div class="layer">
+        <span class="layer-label">Orchestration</span>
+        <span class="layer-value">Mastra (or direct Anthropic SDK)</span>
+        <span class="layer-dim">— agents, workflows, memory</span>
+      </div>
+      <div class="layer">
+        <span class="layer-label">Database</span>
+        <span class="layer-value">Postgres via Supabase or Railway</span>
+        <span class="layer-dim">— state, tasks, audit log</span>
+      </div>
+      <div class="layer">
+        <span class="layer-label">ORM</span>
+        <span class="layer-value">Drizzle ORM</span>
+        <span class="layer-dim">— TypeScript-native, lightweight</span>
+      </div>
+      <div class="layer">
+        <span class="layer-label">Scheduler</span>
+        <span class="layer-value">node-cron</span>
+        <span class="layer-dim">— heartbeats, simple and effective</span>
+      </div>
+      <div class="layer">
+        <span class="layer-label">Tool layer</span>
+        <span class="layer-value">MCP servers (Anthropic SDK)</span>
+        <span class="layer-dim">— standard, future-proof tool access</span>
+      </div>
+      <div class="layer">
+        <span class="layer-label">Models</span>
+        <span class="layer-value">Claude Sonnet for reasoning, Haiku for routing</span>
+        <span class="layer-dim">— tier by task complexity</span>
+      </div>
+    </div>
+
+    <h3>Core Data Model (Start Here)</h3>
+    <div class="stack-rec" style="font-size: 12px; line-height: 1.8;">
+      <div class="layer"><span class="layer-label">companies</span><span class="layer-value">id, name, mission, created_at</span></div>
+      <div class="layer"><span class="layer-label">agents</span><span class="layer-value">id, company_id, parent_id, role, model, budget_monthly, budget_used, skills_md</span></div>
+      <div class="layer"><span class="layer-label">projects</span><span class="layer-value">id, company_id, goal, context</span></div>
+      <div class="layer"><span class="layer-label">tasks</span><span class="layer-value">id, project_id, assigned_agent_id, status, title, created_at</span></div>
+      <div class="layer"><span class="layer-label">task_events</span><span class="layer-value">id, task_id, event_type, payload (JSON), created_at</span><span class="layer-dim">— append-only</span></div>
+      <div class="layer"><span class="layer-label">heartbeats</span><span class="layer-value">id, agent_id, fired_at, tasks_processed, tokens_used, cost_usd</span></div>
+    </div>
+
+    <h3>What to Deprioritize (for V1)</h3>
+    <ul class="body-list">
+      <li><strong>A2A protocol</strong> — you're not federating with external agents yet. MCP is enough.</li>
+      <li><strong>Subprocess agent adapters</strong> — skip the Claude Code CLI spawning complexity. Call the Anthropic API directly.</li>
+      <li><strong>RAG / vector search</strong> — start with skills as plain Markdown context injection. Vector search is a V2 feature.</li>
+      <li><strong>Multi-user auth</strong> — build for yourself first. Add RBAC when you need to share it.</li>
+    </ul>
+  </section>
+
+</div>
+
+<footer>
+  <div class="container">
+    <p>Agent Orchestration Landscape 2026 · Research compiled by Claude · bystarnes</p>
+  </div>
+</footer>
+
+</body>
+</html>

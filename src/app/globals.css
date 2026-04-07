@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+/* ─── Vela Design Tokens ──────────────────────────────────────── */
+/*
+ * Warm stone neutrals + amber primary
+ * Dark-first: default is dark mode
+ * Sidebar: 220px desktop, 48px tablet rail, bottom bar mobile
+ */
+
+:root {
+  /* Light mode */
+  --background: 40 20% 100%;
+  --foreground: 40 7% 9%;
+  --card: 0 0% 100%;
+  --card-foreground: 40 7% 9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 40 7% 9%;
+  --primary: 36 91% 55%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 40 12% 96%;
+  --secondary-foreground: 40 7% 9%;
+  --muted: 40 12% 96%;
+  --muted-foreground: 42 9% 39%;
+  --accent: 40 12% 96%;
+  --accent-foreground: 40 7% 9%;
+  --destructive: 2 62% 49%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 45 12% 82%;
+  --input: 45 12% 82%;
+  --ring: 36 91% 55%;
+  --radius: 0.5rem;
+
+  /* Sidebar width */
+  --sidebar-width: 220px;
+  --sidebar-width-collapsed: 48px;
+
+  /* Vela brand colors */
+  --amber-400: #F5A623;
+  --amber-500: #E08F0D;
+  --stone-25: #FAFAF8;
+  --stone-50: #F5F4F1;
+  --stone-100: #ECEAE4;
+  --stone-200: #D8D5CC;
+  --stone-300: #B8B4A8;
+  --stone-400: #8E897B;
+  --stone-500: #6B665A;
+  --stone-600: #4E4A40;
+  --stone-700: #3A3731;
+  --stone-800: #282622;
+  --stone-900: #1A1917;
+  --stone-950: #0F0E0D;
+  --dark-bg: #111110;
+  --dark-surface: #1A1918;
+  --dark-surface2: #222120;
+  --dark-border: #2E2D2A;
+
+  /* Status colors */
+  --status-success: #3D8B5C;
+  --status-warning: #C27D1A;
+  --status-error: #C4413A;
+  --status-info: #4A7AB5;
+}
+
+.dark {
+  /* Dark mode */
+  --background: 60 3% 6%;
+  --foreground: 40 12% 90%;
+  --card: 30 4% 10%;
+  --card-foreground: 40 12% 90%;
+  --popover: 30 4% 10%;
+  --popover-foreground: 40 12% 90%;
+  --primary: 36 91% 55%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 30 4% 13%;
+  --secondary-foreground: 40 12% 90%;
+  --muted: 30 4% 10%;
+  --muted-foreground: 40 8% 54%;
+  --accent: 30 4% 13%;
+  --accent-foreground: 40 12% 90%;
+  --destructive: 2 62% 49%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 45 5% 17%;
+  --input: 45 5% 17%;
+  --ring: 36 91% 55%;
+}
+
+/* ─── Base ────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+  border-color: hsl(var(--border));
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--dark-bg);
+  color: hsl(var(--foreground));
+  font-family: 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── Typography utilities ────────────────────────────────────── */
+.font-display {
+  font-family: 'Syne', system-ui, sans-serif;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}
+
+/* ─── Focus rings ─────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--amber-400);
+  outline-offset: 2px;
+}
+
+/* ─── Scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--stone-700);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--stone-600);
+}
