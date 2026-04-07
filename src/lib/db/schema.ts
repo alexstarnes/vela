@@ -8,6 +8,7 @@ import {
   jsonb,
   timestamp,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
@@ -27,7 +28,7 @@ export const modelConfigs = pgTable('model_configs', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
   provider: text('provider').notNull(), // 'anthropic' | 'openai' | 'ollama'
-  modelId: text('model_id').notNull(),
+  modelId: text('model_id').notNull().unique(),
   tier: text('tier').notNull(), // 'fast' | 'standard' | 'premium'
   isLocal: boolean('is_local').notNull().default(false),
   endpointUrl: text('endpoint_url'),
@@ -42,9 +43,10 @@ export const modelConfigs = pgTable('model_configs', {
 export const agents = pgTable('agents', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').references(() => projects.id),
-  parentId: uuid('parent_id'), // self-ref, added separately via index
+  parentId: uuid('parent_id'), // self-ref
   name: text('name').notNull(),
   role: text('role').notNull(),
+  domain: text('domain').notNull().default('meta'), // 'meta' | 'product' | 'architecture' | 'implementation' | 'quality' | 'operations'
   systemPrompt: text('system_prompt'),
   modelConfigId: uuid('model_config_id').references(() => modelConfigs.id),
   budgetMonthlyUsd: numeric('budget_monthly_usd', { precision: 10, scale: 2 }),
@@ -58,6 +60,16 @@ export const agents = pgTable('agents', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('idx_agents_budget').on(table.status, table.budgetUsedUsd),
+]);
+
+// ─── agent_model_access ──────────────────────────────────────────
+export const agentModelAccess = pgTable('agent_model_access', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  agentId: uuid('agent_id').notNull().references(() => agents.id, { onDelete: 'cascade' }),
+  modelConfigId: uuid('model_config_id').notNull().references(() => modelConfigs.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uq_agent_model').on(table.agentId, table.modelConfigId),
 ]);
 
 // ─── skills ───────────────────────────────────────────────────────
@@ -145,6 +157,7 @@ export const projectsRelations = relations(projects, ({ many }) => ({
 
 export const modelConfigsRelations = relations(modelConfigs, ({ many }) => ({
   agents: many(agents),
+  agentAccess: many(agentModelAccess),
 }));
 
 export const agentsRelations = relations(agents, ({ one, many }) => ({
@@ -152,10 +165,16 @@ export const agentsRelations = relations(agents, ({ one, many }) => ({
   modelConfig: one(modelConfigs, { fields: [agents.modelConfigId], references: [modelConfigs.id] }),
   parent: one(agents, { fields: [agents.parentId], references: [agents.id], relationName: 'agentParent' }),
   children: many(agents, { relationName: 'agentParent' }),
+  allowedModels: many(agentModelAccess),
   tasks: many(tasks, { relationName: 'assignedAgent' }),
   createdTasks: many(tasks, { relationName: 'createdByAgent' }),
   taskEvents: many(taskEvents),
   heartbeats: many(heartbeats),
+}));
+
+export const agentModelAccessRelations = relations(agentModelAccess, ({ one }) => ({
+  agent: one(agents, { fields: [agentModelAccess.agentId], references: [agents.id] }),
+  modelConfig: one(modelConfigs, { fields: [agentModelAccess.modelConfigId], references: [modelConfigs.id] }),
 }));
 
 export const skillsRelations = relations(skills, ({ one }) => ({
@@ -210,3 +229,6 @@ export type NewHeartbeat = typeof heartbeats.$inferInsert;
 
 export type Approval = typeof approvals.$inferSelect;
 export type NewApproval = typeof approvals.$inferInsert;
+
+export type AgentModelAccess = typeof agentModelAccess.$inferSelect;
+export type NewAgentModelAccess = typeof agentModelAccess.$inferInsert;

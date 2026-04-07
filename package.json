@@ -7,8 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "next dev",
     "dev:mastra": "mastra dev",
-    "build": "next build",
-    "start": "next start",
+    "build": "rm -rf .next && NODE_ENV=production next build",
+    "start": "NODE_ENV=production next start",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/lib/db/seed.ts"

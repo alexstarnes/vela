@@ -12,6 +12,7 @@ import { skills, projects, taskEvents } from '@/lib/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import type { Agent as DbAgent, Task } from '@/lib/db/schema';
 import { resolveModel } from './router';
+import { playbookMarkdownWithoutCorePrompt } from '@/lib/agent-orchestration/reference-docs';
 
 import { createSubtaskTool, updateTaskStatusTool, addMessageTool } from './tools/task-tools';
 import { getProjectContextTool, listTasksTool } from './tools/project-tools';
@@ -69,6 +70,15 @@ async function buildSystemPrompt(
     parts.push(
       `You are ${dbAgent.name}, a ${dbAgent.role} agent. Complete the assigned task thoroughly and accurately.`,
     );
+  }
+
+  // Full orchestration reference (capabilities, phases, anti-patterns, collaboration) from repo
+  const playbook = playbookMarkdownWithoutCorePrompt(dbAgent.name);
+  if (playbook) {
+    parts.push(
+      '\n## Role playbook (from agent-orchestration skill reference)\n\nThe following expands your role beyond the core instructions above: capabilities, model tier, phases, examples, anti-patterns, and handoff rules.\n',
+    );
+    parts.push(playbook);
   }
 
   // Project context

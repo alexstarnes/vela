@@ -9,7 +9,7 @@ import type { ActionResult } from './projects';
 
 const AgentSchema = z.object({
   name: z.string().min(1, 'Name is required').max(200),
-  role: z.string().min(1, 'Role is required').max(100),
+  role: z.string().min(1, 'Role is required').max(2000),
   systemPrompt: z.string().max(10000).optional(),
   modelConfigId: z.string().uuid().optional(),
   projectId: z.string().uuid().optional(),
