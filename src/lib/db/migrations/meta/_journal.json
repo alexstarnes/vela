@@ -15,6 +15,20 @@
       "when": 1775585811186,
       "tag": "0001_magical_vargas",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775596138377,
+      "tag": "0002_overjoyed_prism",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775597887489,
+      "tag": "0003_foamy_sentinels",
+      "breakpoints": true
     }
   ]
 }

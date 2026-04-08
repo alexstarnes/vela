@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
 import { assertValidTransition, type TaskStatus } from '@/lib/tasks/state-machine';
 import { logTaskEvent } from '@/lib/events/logger';
+import { executeHeartbeatForTask } from '@/lib/mastra/heartbeat';
 import type { ActionResult } from './projects';
 
 const CreateTaskSchema = z.object({
@@ -145,6 +146,37 @@ export async function transitionTask(
   revalidatePath('/tasks');
   revalidatePath(`/tasks/${id}`);
   revalidatePath('/activity');
+  return { success: true, data: undefined };
+}
+
+const RunTaskHeartbeatSchema = z.object({
+  taskId: z.string().uuid(),
+});
+
+/** Runs the assigned agent on this task (checkout + model). Does not run on backlog. */
+export async function runTaskHeartbeat(
+  input: unknown,
+): Promise<ActionResult> {
+  const parsed = RunTaskHeartbeatSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      success: false,
+      error: parsed.error.issues.map((e: { message: string }) => e.message).join('; '),
+    };
+  }
+
+  const { taskId } = parsed.data;
+  const result = await executeHeartbeatForTask(taskId);
+
+  revalidatePath('/tasks');
+  revalidatePath(`/tasks/${taskId}`);
+  revalidatePath('/activity');
+  revalidatePath('/scheduler');
+
+  if (!result.success) {
+    return { success: false, error: result.error ?? 'Agent run failed' };
+  }
+
   return { success: true, data: undefined };
 }
 

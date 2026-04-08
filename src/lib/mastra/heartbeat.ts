@@ -30,6 +30,83 @@ function estimateCostUsd(inputTokens: number, outputTokens: number): string {
   return cost.toFixed(6);
 }
 
+/**
+ * Normalize tool-call objects from Mastra / AI SDK (shape varies by provider & version).
+ * Without this, `toolName`/`input` are often missing → everything becomes "unknown:{}" and
+ * loop detection false-positives when the same step is reflected multiple times in `steps`.
+ */
+function extractToolCallMeta(tc: unknown): {
+  toolName: string;
+  toolInput: unknown;
+  toolCallId: string | null;
+} {
+  if (!tc || typeof tc !== 'object') {
+    return { toolName: 'unknown', toolInput: {}, toolCallId: null };
+  }
+
+  const r = tc as Record<string, unknown>;
+
+  // Mastra v1.23+ stream chunks: { type: 'tool-call', payload: { toolCallId, toolName, args } }
+  if (r.payload && typeof r.payload === 'object') {
+    const pl = r.payload as Record<string, unknown>;
+    if (
+      r.type === 'tool-call' ||
+      typeof pl.toolName === 'string' ||
+      typeof pl.toolCallId === 'string' ||
+      pl.args !== undefined ||
+      pl.input !== undefined
+    ) {
+      return extractToolCallMeta(r.payload);
+    }
+  }
+
+  if (
+    r.toolInvocation &&
+    typeof r.toolInvocation === 'object' &&
+    !r.toolName &&
+    !r.name &&
+    !r.function
+  ) {
+    return extractToolCallMeta(r.toolInvocation);
+  }
+
+  const toolCallId =
+    (typeof r.toolCallId === 'string' && r.toolCallId) ||
+    (typeof r.id === 'string' && r.id) ||
+    null;
+
+  let toolName =
+    (typeof r.toolName === 'string' && r.toolName) ||
+    (typeof r.name === 'string' && r.name) ||
+    (typeof r.tool === 'string' && r.tool) ||
+    '';
+
+  let toolInput: unknown =
+    r.input ?? r.args ?? r.arguments ?? r.parameters;
+
+  const fn = r.function;
+  if (fn && typeof fn === 'object') {
+    const f = fn as Record<string, unknown>;
+    if (!toolName && typeof f.name === 'string') toolName = f.name;
+    if (toolInput === undefined || toolInput === null) {
+      if (f.arguments !== undefined) toolInput = f.arguments;
+    }
+  }
+
+  if (!toolName) toolName = 'unknown';
+  if (toolInput === undefined || toolInput === null) toolInput = {};
+
+  if (typeof toolInput === 'string') {
+    try {
+      toolInput = JSON.parse(toolInput) as unknown;
+    } catch {
+      toolInput = { _raw: toolInput };
+    }
+  }
+
+  return { toolName, toolInput, toolCallId };
+}
+
 // ─── Agent requires_approval check ────────────────────────────────
 // We store this as a JSON field in system_prompt conventions, but for MVP
 // we check agent.role contains "requires_approval" as a simple heuristic.
@@ -140,33 +217,41 @@ async function runAgentOnTask(
   );
 
   // 3. Process tool calls through loop tracker
-  if (result.steps) {
+  // Prefer top-level `toolCalls` from Mastra getFullOutput(); step-level arrays can repeat the same ids.
+  const out = result as Record<string, unknown>;
+  const flatToolCalls: unknown[] = [];
+  if (Array.isArray(out.toolCalls) && out.toolCalls.length > 0) {
+    flatToolCalls.push(...(out.toolCalls as unknown[]));
+  } else if (result.steps) {
     for (const step of result.steps) {
-      if (step.toolCalls) {
-        for (const tc of step.toolCalls) {
-          const toolCall = tc as unknown as Record<string, unknown>;
-          const toolName = String(toolCall.toolName ?? toolCall.name ?? 'unknown');
-          const toolInput = toolCall.input ?? toolCall.args ?? {};
+      if (step.toolCalls?.length) flatToolCalls.push(...step.toolCalls);
+    }
+  }
 
-          // Loop detection: throws LoopDetectedError if threshold exceeded
-          loopTracker.checkAndRecord(toolName, toolInput);
+  const seenToolCallIds = new Set<string>();
+  for (const tc of flatToolCalls) {
+    const { toolName, toolInput, toolCallId } = extractToolCallMeta(tc);
+    if (toolCallId && seenToolCallIds.has(toolCallId)) {
+      continue;
+    }
+    if (toolCallId) seenToolCallIds.add(toolCallId);
 
-          await logTaskEvent({
-            taskId: checkedOutTask.id,
-            agentId: dbAgent.id,
-            eventType: 'tool_call',
-            payload: {
-              tool_name: toolName,
-              input: toolInput,
-            },
-          });
+    // Loop detection: throws LoopDetectedError if threshold exceeded
+    loopTracker.checkAndRecord(toolName, toolInput);
 
-          // Check for delegation requiring approval
-          if (toolName === 'create_subtask' && agentRequiresApproval(dbAgent)) {
-            await handleDelegationApproval(dbAgent, checkedOutTask, toolInput);
-          }
-        }
-      }
+    await logTaskEvent({
+      taskId: checkedOutTask.id,
+      agentId: dbAgent.id,
+      eventType: 'tool_call',
+      payload: {
+        tool_name: toolName,
+        input: toolInput,
+      },
+    });
+
+    // Check for delegation requiring approval
+    if (toolName === 'create_subtask' && agentRequiresApproval(dbAgent)) {
+      await handleDelegationApproval(dbAgent, checkedOutTask, toolInput);
     }
   }
 
@@ -405,7 +490,7 @@ export async function executeHeartbeat(agentId: string): Promise<{
       }
     }
 
-    // Log generic error on task
+    // Log generic error on task; requeue so scheduled heartbeats can retry (they only checkout `open`).
     if (checkedOutTask) {
       try {
         await logTaskEvent({
@@ -414,6 +499,24 @@ export async function executeHeartbeat(agentId: string): Promise<{
           eventType: 'error',
           payload: { message: errorMsg, stack: err instanceof Error ? err.stack : undefined },
         });
+
+        if (!(err instanceof LoopDetectedError)) {
+          await db
+            .update(tasks)
+            .set({ status: 'open', updatedAt: new Date() })
+            .where(eq(tasks.id, checkedOutTask.id));
+
+          await logTaskEvent({
+            taskId: checkedOutTask.id,
+            agentId,
+            eventType: 'status_change',
+            payload: {
+              from: 'in_progress',
+              to: 'open',
+              reason: 'Run failed — requeued for retry',
+            },
+          });
+        }
       } catch {
         console.error('[heartbeat] Failed to log error event');
       }
@@ -608,6 +711,24 @@ export async function executeHeartbeatForTask(
           eventType: 'error',
           payload: { message: errorMsg },
         });
+
+        if (!(err instanceof LoopDetectedError)) {
+          await db
+            .update(tasks)
+            .set({ status: 'open', updatedAt: new Date() })
+            .where(eq(tasks.id, taskId));
+
+          await logTaskEvent({
+            taskId,
+            agentId: dbAgent.id,
+            eventType: 'status_change',
+            payload: {
+              from: 'in_progress',
+              to: 'open',
+              reason: 'Run failed — requeued for retry',
+            },
+          });
+        }
       } catch {
         // swallow
       }

@@ -4,6 +4,7 @@
 // open → in_progress
 // in_progress → review
 // in_progress → waiting_for_human
+// in_progress → open (requeue after failed run / manual retry)
 // in_progress → blocked
 // review → done
 // review → in_progress
@@ -33,7 +34,7 @@ export type TaskStatus =
 const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   backlog: ['open', 'cancelled'],
   open: ['in_progress', 'cancelled'],
-  in_progress: ['review', 'waiting_for_human', 'blocked', 'cancelled'],
+  in_progress: ['review', 'waiting_for_human', 'open', 'blocked', 'cancelled'],
   review: ['done', 'in_progress', 'cancelled'],
   done: ['cancelled'],
   waiting_for_human: ['in_progress', 'cancelled'],

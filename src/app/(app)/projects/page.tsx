@@ -3,9 +3,10 @@ export const dynamic = 'force-dynamic';
 import { listProjects } from '@/lib/actions/projects';
 import { listTasks } from '@/lib/actions/tasks';
 import { listAgents } from '@/lib/actions/agents';
-import { FolderOpen, Plus } from 'lucide-react';
+import { FolderOpen } from 'lucide-react';
 import Link from 'next/link';
 import { CreateProjectDialog } from './create-project-dialog';
+import type { Project, ProjectConnectionStatus, ProjectSourceType } from '@/lib/db/schema';
 
 export default async function ProjectsPage() {
   const [allProjects, allTasks, allAgents] = await Promise.all([
@@ -60,7 +61,7 @@ export default async function ProjectsPage() {
               No projects yet
             </h2>
             <p className="text-xs" style={{ color: 'var(--stone-500)' }}>
-              Create your first project to get started.
+              Connect a local folder or GitHub repo to get started.
             </p>
           </div>
         ) : (
@@ -91,6 +92,8 @@ export default async function ProjectsPage() {
                         >
                           {project.name}
                         </p>
+                        <SourceBadge project={project} />
+                        <ConnectionBadge status={project.connectionStatus ?? 'legacy'} />
                         <span
                           className="inline-block text-[10px] font-mono px-2 py-0.5 rounded-full shrink-0"
                           style={{
@@ -109,6 +112,12 @@ export default async function ProjectsPage() {
                           {project.goal}
                         </p>
                       )}
+                      <p
+                        className="text-[11px] font-mono mb-3 truncate"
+                        style={{ color: 'var(--stone-500)' }}
+                      >
+                        {getProjectSourceSummary(project)}
+                      </p>
                       <div
                         className="flex gap-4 text-[10px] font-mono mb-2"
                         style={{ color: 'var(--stone-500)' }}
@@ -167,6 +176,8 @@ export default async function ProjectsPage() {
                           >
                             {project.name}
                           </p>
+                          <SourceBadge project={project} />
+                          <ConnectionBadge status={project.connectionStatus ?? 'legacy'} />
                           <span
                             className="inline-block text-[10px] font-mono px-2 py-0.5 rounded-full"
                             style={{
@@ -178,10 +189,11 @@ export default async function ProjectsPage() {
                           </span>
                         </div>
                         <div
-                          className="text-[10px] font-mono"
+                          className="text-[10px] font-mono space-y-1"
                           style={{ color: 'var(--stone-500)' }}
                         >
-                          {stats.total} tasks
+                          <div>{stats.total} tasks</div>
+                          <div>{getProjectSourceSummary(project)}</div>
                         </div>
                       </div>
                     </Link>
@@ -193,5 +205,63 @@ export default async function ProjectsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function SourceBadge({ project }: { project: Project }) {
+  const sourceType = (project.sourceType ?? 'manual') as ProjectSourceType;
+  const styles: Record<ProjectSourceType, { bg: string; fg: string; label: string }> = {
+    manual: { bg: 'var(--dark-surface2)', fg: 'var(--stone-500)', label: 'legacy' },
+    local: { bg: '#4A7AB520', fg: '#4A7AB5', label: 'local' },
+    github: { bg: '#F5A62320', fg: '#F5A623', label: 'github' },
+  };
+  const style = styles[sourceType];
+
+  return (
+    <span
+      className="inline-block text-[10px] font-mono px-2 py-0.5 rounded-full shrink-0"
+      style={{ background: style.bg, color: style.fg }}
+    >
+      {style.label}
+    </span>
+  );
+}
+
+function getProjectSourceSummary(project: Project): string {
+  const sourceType = (project.sourceType ?? 'manual') as ProjectSourceType;
+
+  if (sourceType === 'github') {
+    const repoLabel =
+      project.sourceLabel ||
+      (project.repositoryOwner && project.repositoryName
+        ? `${project.repositoryOwner}/${project.repositoryName}`
+        : project.repositoryUrl) ||
+      'GitHub repository';
+    const branchLabel = project.defaultBranch ? ` (${project.defaultBranch})` : '';
+    return `${repoLabel}${branchLabel}`;
+  }
+
+  if (sourceType === 'local') {
+    return project.workspacePath || 'Local workspace';
+  }
+
+  return 'Legacy project with no workspace yet';
+}
+
+function ConnectionBadge({ status }: { status: string }) {
+  const styles: Record<ProjectConnectionStatus, { bg: string; fg: string; label: string }> = {
+    legacy: { bg: 'var(--dark-surface2)', fg: 'var(--stone-500)', label: 'legacy' },
+    connected: { bg: '#3D8B5C20', fg: '#3D8B5C', label: 'connected' },
+    attention_required: { bg: '#C4413A20', fg: '#C4413A', label: 'needs attention' },
+  };
+  const style = styles[(status as ProjectConnectionStatus) ?? 'legacy'] ?? styles.legacy;
+
+  return (
+    <span
+      className="inline-block text-[10px] font-mono px-2 py-0.5 rounded-full shrink-0"
+      style={{ background: style.bg, color: style.fg }}
+    >
+      {style.label}
+    </span>
   );
 }

@@ -6,8 +6,9 @@ import { listTasks } from '@/lib/actions/tasks';
 import { listAgents } from '@/lib/actions/agents';
 import { listSkills } from '@/lib/actions/skills';
 import Link from 'next/link';
-import { ChevronLeft, FolderOpen } from 'lucide-react';
+import { ChevronLeft } from 'lucide-react';
 import { ProjectDetailClient } from './project-detail-client';
+import type { ProjectConnectionStatus, ProjectSourceType } from '@/lib/db/schema';
 
 export default async function ProjectDetailPage({
   params,
@@ -52,6 +53,8 @@ export default async function ProjectDetailPage({
           </h1>
         </div>
         <div className="flex items-center gap-2">
+          <SourceBadge sourceType={project.sourceType ?? 'manual'} />
+          <ConnectionBadge status={project.connectionStatus ?? 'legacy'} />
           <span
             className="inline-block text-[10px] font-mono px-2 py-0.5 rounded-full"
             style={{
@@ -130,6 +133,56 @@ export default async function ProjectDetailPage({
           </div>
         )}
 
+        {/* Workspace */}
+        <div
+          className="rounded-lg p-4 space-y-3"
+          style={{ background: 'var(--dark-surface)', border: '1px solid var(--dark-border)' }}
+        >
+          <p className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--stone-500)' }}>
+            Workspace
+          </p>
+          {project.sourceType === 'manual' ? (
+            <p className="text-sm" style={{ color: 'var(--stone-400)' }}>
+              This is a legacy project and does not have a connected workspace yet.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <WorkspaceRow label="Source">
+                {project.sourceType === 'github' ? 'GitHub repo' : 'Local folder'}
+              </WorkspaceRow>
+              <WorkspaceRow label="Workspace Path">
+                {project.workspacePath ?? 'Not set'}
+              </WorkspaceRow>
+              <WorkspaceRow label="Connection Status">
+                {project.connectionStatus ?? 'legacy'}
+              </WorkspaceRow>
+              <WorkspaceRow label="Helper Workspace ID">
+                {project.helperWorkspaceId ?? 'Not set'}
+              </WorkspaceRow>
+              {project.sourceType === 'github' && (
+                <>
+                  <WorkspaceRow label="Repository">
+                    {project.sourceLabel ||
+                      (project.repositoryOwner && project.repositoryName
+                        ? `${project.repositoryOwner}/${project.repositoryName}`
+                        : project.repositoryUrl) ||
+                      'Not set'}
+                  </WorkspaceRow>
+                  <WorkspaceRow label="Repository URL">
+                    {project.repositoryUrl ?? 'Not set'}
+                  </WorkspaceRow>
+                  <WorkspaceRow label="Branch">
+                    {project.defaultBranch ?? 'Unknown'}
+                  </WorkspaceRow>
+                  <WorkspaceRow label="GitHub Connection">
+                    {project.githubConnection?.login ?? 'Not connected'}
+                  </WorkspaceRow>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Tasks */}
         <div>
           <div className="flex items-center justify-between mb-3">
@@ -189,6 +242,61 @@ export default async function ProjectDetailPage({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function SourceBadge({ sourceType }: { sourceType: string }) {
+  const styles: Record<ProjectSourceType, { bg: string; fg: string; label: string }> = {
+    manual: { bg: 'var(--dark-surface2)', fg: 'var(--stone-500)', label: 'legacy' },
+    local: { bg: '#4A7AB520', fg: '#4A7AB5', label: 'local' },
+    github: { bg: '#F5A62320', fg: '#F5A623', label: 'github' },
+  };
+  const style = styles[(sourceType as ProjectSourceType) ?? 'manual'] ?? styles.manual;
+
+  return (
+    <span
+      className="inline-block text-[10px] font-mono px-2 py-0.5 rounded-full"
+      style={{ background: style.bg, color: style.fg }}
+    >
+      {style.label}
+    </span>
+  );
+}
+
+function ConnectionBadge({ status }: { status: string }) {
+  const styles: Record<ProjectConnectionStatus, { bg: string; fg: string; label: string }> = {
+    legacy: { bg: 'var(--dark-surface2)', fg: 'var(--stone-500)', label: 'legacy' },
+    connected: { bg: '#3D8B5C20', fg: '#3D8B5C', label: 'connected' },
+    attention_required: { bg: '#C4413A20', fg: '#C4413A', label: 'needs attention' },
+  };
+  const style = styles[(status as ProjectConnectionStatus) ?? 'legacy'] ?? styles.legacy;
+
+  return (
+    <span
+      className="inline-block text-[10px] font-mono px-2 py-0.5 rounded-full"
+      style={{ background: style.bg, color: style.fg }}
+    >
+      {style.label}
+    </span>
+  );
+}
+
+function WorkspaceRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <p className="text-[10px] font-mono uppercase tracking-wider mb-1" style={{ color: 'var(--stone-500)' }}>
+        {label}
+      </p>
+      <p className="text-sm break-all" style={{ color: '#ECEAE4' }}>
+        {children}
+      </p>
     </div>
   );
 }

@@ -18,10 +18,42 @@ export const projects = pgTable('projects', {
   name: text('name').notNull(),
   goal: text('goal'),
   context: text('context'),
+  sourceType: text('source_type').notNull().default('manual'),
+  connectionStatus: text('connection_status').notNull().default('legacy'),
+  workspacePath: text('workspace_path'),
+  helperWorkspaceId: text('helper_workspace_id'),
+  repositoryUrl: text('repository_url'),
+  repositoryOwner: text('repository_owner'),
+  repositoryName: text('repository_name'),
+  defaultBranch: text('default_branch'),
+  sourceLabel: text('source_label'),
+  githubConnectionId: uuid('github_connection_id').references(() => githubConnections.id),
+  lastValidatedAt: timestamp('last_validated_at', { withTimezone: true }),
   status: text('status').notNull().default('active'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ─── github_connections ───────────────────────────────────────────
+export const githubConnections = pgTable('github_connections', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  provider: text('provider').notNull().default('github'),
+  githubUserId: text('github_user_id').notNull(),
+  login: text('login').notNull(),
+  name: text('name'),
+  avatarUrl: text('avatar_url'),
+  accessTokenEncrypted: text('access_token_encrypted').notNull(),
+  refreshTokenEncrypted: text('refresh_token_encrypted'),
+  tokenType: text('token_type'),
+  scope: text('scope'),
+  tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+  refreshTokenExpiresAt: timestamp('refresh_token_expires_at', { withTimezone: true }),
+  status: text('status').notNull().default('active'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uq_github_connections_user').on(table.githubUserId),
+]);
 
 // ─── model_configs ────────────────────────────────────────────────
 export const modelConfigs = pgTable('model_configs', {
@@ -149,10 +181,18 @@ export const approvals = pgTable('approvals', {
 
 // ─── Relations ────────────────────────────────────────────────────
 
-export const projectsRelations = relations(projects, ({ many }) => ({
+export const projectsRelations = relations(projects, ({ one, many }) => ({
   agents: many(agents),
   tasks: many(tasks),
   skills: many(skills),
+  githubConnection: one(githubConnections, {
+    fields: [projects.githubConnectionId],
+    references: [githubConnections.id],
+  }),
+}));
+
+export const githubConnectionsRelations = relations(githubConnections, ({ many }) => ({
+  projects: many(projects),
 }));
 
 export const modelConfigsRelations = relations(modelConfigs, ({ many }) => ({
@@ -208,6 +248,11 @@ export const approvalsRelations = relations(approvals, ({ one }) => ({
 // ─── Inferred types ───────────────────────────────────────────────
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
+export type ProjectSourceType = 'manual' | 'local' | 'github';
+export type ProjectConnectionStatus = 'legacy' | 'connected' | 'attention_required';
+
+export type GitHubConnection = typeof githubConnections.$inferSelect;
+export type NewGitHubConnection = typeof githubConnections.$inferInsert;
 
 export type Agent = typeof agents.$inferSelect;
 export type NewAgent = typeof agents.$inferInsert;

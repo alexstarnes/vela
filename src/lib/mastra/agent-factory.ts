@@ -16,6 +16,14 @@ import { playbookMarkdownWithoutCorePrompt } from '@/lib/agent-orchestration/ref
 
 import { createSubtaskTool, updateTaskStatusTool, addMessageTool } from './tools/task-tools';
 import { getProjectContextTool, listTasksTool } from './tools/project-tools';
+import {
+  gitCheckoutTool,
+  gitDiffTool,
+  gitStatusTool,
+  readWorkspaceFileTool,
+  runWorkspaceCommandTool,
+  writeWorkspaceFileTool,
+} from './tools/workspace-tools';
 
 /**
  * Execution context injected into all tool calls.
@@ -90,6 +98,24 @@ async function buildSystemPrompt(
       parts.push(`\n## Project: ${project.name}`);
       if (project.goal) parts.push(`Goal: ${project.goal}`);
       if (project.context) parts.push(`Context: ${project.context}`);
+      if (project.sourceType === 'github') {
+        const repoLabel =
+          project.sourceLabel ||
+          (project.repositoryOwner && project.repositoryName
+            ? `${project.repositoryOwner}/${project.repositoryName}`
+            : project.repositoryUrl) ||
+          'GitHub repository';
+        parts.push(`Workspace source: GitHub (${repoLabel})`);
+      } else if (project.sourceType === 'local') {
+        parts.push('Workspace source: Local folder');
+      } else {
+        parts.push('Workspace source: Legacy/manual project');
+      }
+      if (project.connectionStatus) parts.push(`Connection status: ${project.connectionStatus}`);
+      if (project.workspacePath) parts.push(`Workspace path: ${project.workspacePath}`);
+      if (project.helperWorkspaceId) parts.push(`Helper workspace ID: ${project.helperWorkspaceId}`);
+      if (project.repositoryUrl) parts.push(`Repository URL: ${project.repositoryUrl}`);
+      if (project.defaultBranch) parts.push(`Default branch: ${project.defaultBranch}`);
     }
 
     // Skills (global + project-scoped)
@@ -181,6 +207,12 @@ export async function createMastraAgent(
     add_message: wrapToolWithContext(addMessageTool, toolCtx),
     get_project_context: wrapToolWithContext(getProjectContextTool, toolCtx),
     list_tasks: wrapToolWithContext(listTasksTool, toolCtx),
+    read_workspace_file: wrapToolWithContext(readWorkspaceFileTool, toolCtx),
+    write_workspace_file: wrapToolWithContext(writeWorkspaceFileTool, toolCtx),
+    run_workspace_command: wrapToolWithContext(runWorkspaceCommandTool, toolCtx),
+    git_status: wrapToolWithContext(gitStatusTool, toolCtx),
+    git_diff: wrapToolWithContext(gitDiffTool, toolCtx),
+    git_checkout: wrapToolWithContext(gitCheckoutTool, toolCtx),
   };
 
   // Create the Mastra Agent

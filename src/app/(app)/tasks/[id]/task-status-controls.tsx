@@ -1,7 +1,7 @@
 'use client';
 
 import { useTransition } from 'react';
-import { transitionTask } from '@/lib/actions/tasks';
+import { runTaskHeartbeat, transitionTask } from '@/lib/actions/tasks';
 import { useRouter } from 'next/navigation';
 import type { Task, Agent } from '@/lib/db/schema';
 import type { TaskStatus } from '@/lib/tasks/state-machine';
@@ -9,10 +9,12 @@ import type { TaskStatus } from '@/lib/tasks/state-machine';
 // Valid transitions from each status
 const NEXT_TRANSITIONS: Record<TaskStatus, { to: TaskStatus; label: string }[]> = {
   backlog: [{ to: 'open', label: 'Open' }, { to: 'cancelled', label: 'Cancel' }],
-  open: [{ to: 'in_progress', label: 'Start' }, { to: 'cancelled', label: 'Cancel' }],
+  // "Run agent" is a separate control — it invokes the heartbeat, not a bare status transition.
+  open: [{ to: 'cancelled', label: 'Cancel' }],
   in_progress: [
     { to: 'review', label: '→ Review' },
     { to: 'waiting_for_human', label: 'Wait for input' },
+    { to: 'open', label: 'Requeue' },
     { to: 'blocked', label: 'Block' },
     { to: 'cancelled', label: 'Cancel' },
   ],
@@ -32,12 +34,23 @@ interface Props {
   agents: Agent[];
 }
 
-export function TaskStatusControls({ task, agents }: Props) {
+export function TaskStatusControls({ task, agents: _agents }: Props) {
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
   const currentStatus = task.status as TaskStatus;
   const transitions = NEXT_TRANSITIONS[currentStatus] ?? [];
+
+  function handleRunAgent() {
+    startTransition(async () => {
+      const result = await runTaskHeartbeat({ taskId: task.id });
+      if (!result.success) {
+        alert(result.error ?? 'Run failed');
+        return;
+      }
+      router.refresh();
+    });
+  }
 
   function handleTransition(to: TaskStatus) {
     startTransition(async () => {
@@ -50,10 +63,26 @@ export function TaskStatusControls({ task, agents }: Props) {
     });
   }
 
-  if (transitions.length === 0) return null;
+  if (transitions.length === 0 && currentStatus !== 'open') return null;
 
   return (
     <div className="flex items-center gap-1.5">
+      {currentStatus === 'open' && task.assignedAgentId ? (
+        <button
+          type="button"
+          onClick={handleRunAgent}
+          disabled={isPending}
+          className="text-[11px] font-mono px-2.5 py-1 rounded-md"
+          style={{
+            background: '#F5A62325',
+            color: '#F5A623',
+            opacity: isPending ? 0.6 : 1,
+            border: '1px solid var(--dark-border)',
+          }}
+        >
+          Run agent
+        </button>
+      ) : null}
       {transitions.map((t) => (
         <button
           key={t.to}

@@ -24,6 +24,12 @@ export const getProjectContextTool = createTool({
     projectName: z.string(),
     goal: z.string().nullable(),
     context: z.string().nullable(),
+    sourceType: z.string().nullable(),
+    connectionStatus: z.string().nullable(),
+    workspacePath: z.string().nullable(),
+    helperWorkspaceId: z.string().nullable(),
+    repositoryUrl: z.string().nullable(),
+    defaultBranch: z.string().nullable(),
     skills: z.array(
       z.object({
         name: z.string(),
@@ -43,6 +49,12 @@ export const getProjectContextTool = createTool({
         projectName: '',
         goal: null,
         context: null,
+        sourceType: null,
+        connectionStatus: null,
+        workspacePath: null,
+        helperWorkspaceId: null,
+        repositoryUrl: null,
+        defaultBranch: null,
         skills: [],
       };
     }
@@ -57,6 +69,12 @@ export const getProjectContextTool = createTool({
         projectName: 'Unknown',
         goal: null,
         context: null,
+        sourceType: null,
+        connectionStatus: null,
+        workspacePath: null,
+        helperWorkspaceId: null,
+        repositoryUrl: null,
+        defaultBranch: null,
         skills: [],
       };
     }
@@ -81,6 +99,12 @@ export const getProjectContextTool = createTool({
       projectName: project.name,
       goal: project.goal,
       context: project.context,
+      sourceType: project.sourceType,
+      connectionStatus: project.connectionStatus,
+      workspacePath: project.workspacePath,
+      helperWorkspaceId: project.helperWorkspaceId,
+      repositoryUrl: project.repositoryUrl,
+      defaultBranch: project.defaultBranch,
       skills: allSkills,
     };
   },
