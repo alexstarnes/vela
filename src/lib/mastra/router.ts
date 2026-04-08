@@ -10,13 +10,19 @@ import { db } from '@/lib/db';
 import { modelConfigs } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { logTaskEvent } from '@/lib/events/logger';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import type { LanguageModelV3 } from '@ai-sdk/provider-v6';
 
 const OLLAMA_TIMEOUT_MS = 3000;
 const FALLBACK_MODEL = 'anthropic/claude-sonnet-4-5';
 
 export interface ResolvedModel {
-  /** The model string in "provider/model-name" format for Mastra Agent */
-  modelId: string;
+  /**
+   * For cloud providers: a model router string like "anthropic/claude-sonnet-4-5".
+   * For Ollama: a LanguageModelV1 instance from @ai-sdk/openai-compatible.
+   * Both are valid inputs for Mastra's Agent `model` parameter.
+   */
+  modelId: string | LanguageModelV3;
   /** Whether a fallback was used instead of the configured model */
   isFallback: boolean;
   /** Provider: anthropic | ollama */
@@ -95,11 +101,16 @@ export async function resolveModel(
     const isOnline = await checkOllamaHealth(tunnelUrl);
 
     if (isOnline) {
-      // Return in openai-compatible format — Mastra's model router can handle
-      // "provider/model" where provider maps to a registered gateway.
-      // For Ollama, we'll configure it as an openai-compatible provider at runtime.
+      // Create a real LanguageModel instance via @ai-sdk/openai-compatible.
+      // Ollama exposes an OpenAI-compatible API, so we point at its /v1 path.
+      // No API key needed for local Ollama; we pass a dummy value.
+      const ollama = createOpenAICompatible({
+        name: 'ollama',
+        baseURL: `${tunnelUrl}/v1`,
+        apiKey: 'ollama', // Ollama doesn't require auth
+      });
       return {
-        modelId: `ollama/${config.modelId}`,
+        modelId: ollama.chatModel(config.modelId),
         isFallback: false,
         provider: 'ollama',
       };

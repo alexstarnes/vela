@@ -24,9 +24,44 @@ async function getWorkspacePath(projectId: string) {
   return project.workspacePath;
 }
 
+export const listWorkspaceFilesTool = createTool({
+  id: 'list_workspace_files',
+  description:
+    'List files and directories in the workspace. Use this FIRST to discover the project structure before reading or writing files.',
+  inputSchema: z.object({
+    directory: z
+      .string()
+      .optional()
+      .default('.')
+      .describe('Directory relative to the workspace root (default: root)'),
+    recursive: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('If true, list files recursively (may be large)'),
+  }),
+  outputSchema: z.object({
+    files: z.string(),
+  }),
+  execute: async (input) => {
+    const ctx = (input as Record<string, unknown>).__context as { projectId: string } | undefined;
+    if (!ctx) return { files: 'ERROR: Missing execution context' };
+    try {
+      const workspacePath = await getWorkspacePath(ctx.projectId);
+      const args = input.recursive
+        ? ['-R', input.directory ?? '.']
+        : [input.directory ?? '.'];
+      const result = await runWorkspaceCommand({ workspacePath, command: 'ls', args });
+      return { files: result.stdout || '(empty directory)' };
+    } catch (err) {
+      return { files: `ERROR: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  },
+});
+
 export const readWorkspaceFileTool = createTool({
   id: 'read_workspace_file',
-  description: 'Read a file from the connected project workspace using a path relative to the repo root.',
+  description: 'Read a file from the connected project workspace. Use list_workspace_files first to find the correct path.',
   inputSchema: z.object({
     relativePath: z.string().min(1).describe('Path relative to the workspace root'),
   }),
@@ -35,9 +70,13 @@ export const readWorkspaceFileTool = createTool({
   }),
   execute: async (input) => {
     const ctx = (input as Record<string, unknown>).__context as { projectId: string } | undefined;
-    if (!ctx) return { content: '' };
-    const workspacePath = await getWorkspacePath(ctx.projectId);
-    return readWorkspaceFile({ workspacePath, relativePath: input.relativePath });
+    if (!ctx) return { content: 'ERROR: Missing execution context' };
+    try {
+      const workspacePath = await getWorkspacePath(ctx.projectId);
+      return await readWorkspaceFile({ workspacePath, relativePath: input.relativePath });
+    } catch (err) {
+      return { content: `ERROR: File not found or unreadable: "${input.relativePath}" — ${err instanceof Error ? err.message : String(err)}` };
+    }
   },
 });
 

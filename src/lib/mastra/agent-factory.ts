@@ -20,6 +20,7 @@ import {
   gitCheckoutTool,
   gitDiffTool,
   gitStatusTool,
+  listWorkspaceFilesTool,
   readWorkspaceFileTool,
   runWorkspaceCommandTool,
   writeWorkspaceFileTool,
@@ -130,7 +131,13 @@ async function buildSystemPrompt(
       parts.push('\n## Relevant Skills');
       for (const skill of allSkills) {
         parts.push(`### ${skill.name} (${skill.scope})`);
-        if (skill.contentMd) parts.push(skill.contentMd);
+        // Truncate skill content to ~2000 chars to conserve tokens
+        if (skill.contentMd) {
+          const content = skill.contentMd.length > 2000
+            ? skill.contentMd.slice(0, 2000) + '\n... (truncated)'
+            : skill.contentMd;
+          parts.push(content);
+        }
       }
     }
   }
@@ -142,11 +149,11 @@ async function buildSystemPrompt(
   parts.push(`Status: ${task.status}`);
   parts.push(`Priority: ${task.priority}`);
 
-  // Recent events for continuity
+  // Recent events for continuity (limit to 5 to conserve tokens)
   const recentEvents = await db.query.taskEvents.findMany({
     where: eq(taskEvents.taskId, task.id),
     orderBy: [desc(taskEvents.createdAt)],
-    limit: 10,
+    limit: 5,
   });
 
   if (recentEvents.length > 0) {
@@ -162,13 +169,27 @@ async function buildSystemPrompt(
 
   parts.push('\n## Instructions');
   parts.push(
-    'Complete the task. Use available tools to create subtasks, update status, add messages, and access project context as needed.',
+    'You MUST take direct action to complete the task. Do NOT just describe what you would do — actually do it using your tools.',
   );
   parts.push(
-    'When you are done, use update_task_status to move the task to "review" status.',
+    'Follow this workflow:\n' +
+    '1) Use list_workspace_files to discover the project file structure.\n' +
+    '2) Use read_workspace_file to read the files you need to modify. You MUST read a file before writing to it.\n' +
+    '3) Use write_workspace_file to write the COMPLETE updated file contents (not placeholders or comments).\n' +
+    '4) Use update_task_status with status "review" when done.',
+  );
+  parts.push(
+    'CRITICAL RULES:\n' +
+    '- NEVER write placeholder code like "// Existing code..." — always write the full, real file contents.\n' +
+    '- NEVER guess file paths — always use list_workspace_files first.\n' +
+    '- NEVER repeat the same tool call twice.\n' +
+    '- Do NOT create subtasks or ask questions — do the work yourself.',
   );
 
-  return parts.join('\n');
+  const prompt = parts.join('\n');
+  // Rough token estimate: ~4 chars per token
+  console.log(`[agent-factory] System prompt for "${dbAgent.name}": ${prompt.length} chars (~${Math.round(prompt.length / 4)} tokens)`);
+  return prompt;
 }
 
 /**
@@ -179,10 +200,16 @@ async function buildSystemPrompt(
  * - Task and project tools with injected context
  * - System prompt built from agent config, project, skills, and task
  */
+export interface MastraAgentResult {
+  agent: Agent;
+  provider: string;
+  isFallback: boolean;
+}
+
 export async function createMastraAgent(
   dbAgent: DbAgent,
   task: Task,
-): Promise<Agent> {
+): Promise<MastraAgentResult> {
   // Resolve the model
   const resolved = await resolveModel(
     dbAgent.modelConfigId,
@@ -207,6 +234,7 @@ export async function createMastraAgent(
     add_message: wrapToolWithContext(addMessageTool, toolCtx),
     get_project_context: wrapToolWithContext(getProjectContextTool, toolCtx),
     list_tasks: wrapToolWithContext(listTasksTool, toolCtx),
+    list_workspace_files: wrapToolWithContext(listWorkspaceFilesTool, toolCtx),
     read_workspace_file: wrapToolWithContext(readWorkspaceFileTool, toolCtx),
     write_workspace_file: wrapToolWithContext(writeWorkspaceFileTool, toolCtx),
     run_workspace_command: wrapToolWithContext(runWorkspaceCommandTool, toolCtx),
@@ -224,5 +252,5 @@ export async function createMastraAgent(
     tools: wrappedTools,
   });
 
-  return agent;
+  return { agent, provider: resolved.provider, isFallback: resolved.isFallback };
 }

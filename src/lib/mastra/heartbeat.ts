@@ -207,7 +207,7 @@ async function runAgentOnTask(
   const loopTracker = new LoopTracker(3);
 
   // 1. Create Mastra agent instance
-  const mastraAgent = await createMastraAgent(dbAgent, checkedOutTask);
+  const { agent: mastraAgent, provider } = await createMastraAgent(dbAgent, checkedOutTask);
 
   // 2. Execute the agent
   const result = await mastraAgent.generate(
@@ -261,7 +261,8 @@ async function runAgentOnTask(
     : 0;
   const inputTokens = result.usage?.inputTokens ?? 0;
   const outputTokens = result.usage?.outputTokens ?? 0;
-  const costUsd = estimateCostUsd(inputTokens, outputTokens);
+  // Local models (ollama) have zero dollar cost
+  const costUsd = provider === 'ollama' ? '0.000000' : estimateCostUsd(inputTokens, outputTokens);
 
   await logTaskEvent({
     taskId: checkedOutTask.id,
