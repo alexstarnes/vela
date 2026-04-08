@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "requires_approval" boolean DEFAULT false NOT NULL;

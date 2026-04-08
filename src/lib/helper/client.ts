@@ -149,3 +149,26 @@ export async function checkoutWorkspaceGitRef(params: {
 }): Promise<{ stdout: string }> {
   return callHelper<{ stdout: string }>('/workspace/git-checkout', 'POST', params);
 }
+
+export async function gitAdd(params: {
+  workspacePath: string;
+  files?: string[];
+}): Promise<{ stdout: string }> {
+  return callHelper<{ stdout: string }>('/workspace/git-add', 'POST', params);
+}
+
+export async function gitCommit(params: {
+  workspacePath: string;
+  message: string;
+}): Promise<{ stdout: string; commitSha: string | null }> {
+  return callHelper<{ stdout: string; commitSha: string | null }>('/workspace/git-commit', 'POST', params);
+}
+
+export async function gitPush(params: {
+  workspacePath: string;
+  remote?: string;
+  setUpstream?: boolean;
+  authToken?: string;
+}): Promise<{ stdout: string }> {
+  return callHelper<{ stdout: string }>('/workspace/git-push', 'POST', params);
+}

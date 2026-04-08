@@ -40,7 +40,11 @@
       "Bash(npm run:*)",
       "Bash(npx pnpm:*)",
       "Bash(pnpm build:*)",
-      "Bash(git -C /Users/starnescreative/vela grep -i 'sk-ant\\\\|api_key.*=.*[A-Za-z0-9]{10}' -- ':\\(exclude\\)*.example' ':\\(exclude\\)node_modules')"
+      "Bash(git -C /Users/starnescreative/vela grep -i 'sk-ant\\\\|api_key.*=.*[A-Za-z0-9]{10}' -- ':\\(exclude\\)*.example' ':\\(exclude\\)node_modules')",
+      "Bash(npx drizzle-kit:*)",
+      "Bash(grep -A 30 \"function createTool\" /Users/starnescreative/vela/node_modules/@mastra/core/dist/tools/*.js)",
+      "Bash(npx tsx -e ':*)",
+      "Bash(npm test:*)"
     ]
   }
 }

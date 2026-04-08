@@ -53,6 +53,9 @@ export async function createTask(
 
   const data = parsed.data;
 
+  // If an agent is assigned at creation, start as 'open' so heartbeat can pick it up
+  const initialStatus = data.assignedAgentId ? 'open' : 'backlog';
+
   const [task] = await db
     .insert(tasks)
     .values({
@@ -62,7 +65,7 @@ export async function createTask(
       assignedAgentId: data.assignedAgentId,
       priority: data.priority,
       parentTaskId: data.parentTaskId,
-      status: 'backlog',
+      status: initialStatus,
     })
     .returning({ id: tasks.id });
 
@@ -70,7 +73,7 @@ export async function createTask(
   await logTaskEvent({
     taskId: task.id,
     eventType: 'status_change',
-    payload: { from: null, to: 'backlog', reason: 'Task created' },
+    payload: { from: null, to: initialStatus, reason: data.assignedAgentId ? 'Task created with agent assigned' : 'Task created' },
   });
 
   revalidatePath('/tasks');
@@ -199,9 +202,17 @@ export async function assignTask(input: {
 
   const { taskId, agentId, assignedBy } = parsed.data;
 
+  // If assigning an agent, also auto-transition backlog → open
+  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+  const shouldOpen = agentId && task?.status === 'backlog';
+
   await db
     .update(tasks)
-    .set({ assignedAgentId: agentId, updatedAt: new Date() })
+    .set({
+      assignedAgentId: agentId,
+      ...(shouldOpen ? { status: 'open' } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(tasks.id, taskId));
 
   await logTaskEvent({
@@ -210,6 +221,15 @@ export async function assignTask(input: {
     eventType: 'assignment',
     payload: { assigned_to: agentId, assigned_by: assignedBy ?? null },
   });
+
+  if (shouldOpen) {
+    await logTaskEvent({
+      taskId,
+      agentId: assignedBy,
+      eventType: 'status_change',
+      payload: { from: 'backlog', to: 'open', reason: 'Auto-opened on agent assignment' },
+    });
+  }
 
   revalidatePath('/tasks');
   revalidatePath(`/tasks/${taskId}`);

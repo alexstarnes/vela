@@ -11,24 +11,20 @@
  */
 
 import { db } from '@/lib/db';
-import { tasks, agents, heartbeats, approvals } from '@/lib/db/schema';
+import { tasks, agents, heartbeats, approvals, projects, modelConfigs } from '@/lib/db/schema';
 import { eq, and, isNull, sql } from 'drizzle-orm';
 import { logTaskEvent } from '@/lib/events/logger';
 import { createMastraAgent } from './agent-factory';
+import { getFallbackModelForTier } from './router';
+import { getMastra } from './index';
 import { checkBudgetPrecondition, spendBudget } from '@/lib/governance/budget';
 import { LoopTracker, LoopDetectedError } from '@/lib/governance/loop-detector';
+import { checkoutWorkspaceGitRef } from '@/lib/helper/client';
 import type { Task, Agent as DbAgent } from '@/lib/db/schema';
-
-// ─── Model cost constants (dollars per token) ─────────────────────
-// Used for rough cost estimation when the model doesn't return cost metadata.
-// These are conservative estimates; real costs depend on model used.
-const COST_PER_INPUT_TOKEN = 0.000003; // $3/M tokens (Sonnet)
-const COST_PER_OUTPUT_TOKEN = 0.000015; // $15/M tokens (Sonnet)
-
-function estimateCostUsd(inputTokens: number, outputTokens: number): string {
-  const cost = inputTokens * COST_PER_INPUT_TOKEN + outputTokens * COST_PER_OUTPUT_TOKEN;
-  return cost.toFixed(6);
-}
+import { classifyTaskMode } from '@/lib/orchestration/mode-classifier';
+import { incrementTaskFailureCount } from '@/lib/orchestration/escalation';
+import { selectWorkflowForClassification, type WorkflowId } from '@/lib/orchestration/workflow-selector';
+import { estimateCostUsd, getModelCostRates } from './costs';
 
 /**
  * Normalize tool-call objects from Mastra / AI SDK (shape varies by provider & version).
@@ -108,14 +104,8 @@ function extractToolCallMeta(tc: unknown): {
 }
 
 // ─── Agent requires_approval check ────────────────────────────────
-// We store this as a JSON field in system_prompt conventions, but for MVP
-// we check agent.role contains "requires_approval" as a simple heuristic.
-// A full implementation would store this as a DB column.
 function agentRequiresApproval(dbAgent: DbAgent): boolean {
-  // Check the system prompt for the marker or the role
-  const prompt = (dbAgent.systemPrompt ?? '').toLowerCase();
-  const role = (dbAgent.role ?? '').toLowerCase();
-  return prompt.includes('requires_approval:true') || role.includes('requires_approval');
+  return dbAgent.requiresApproval === true;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────
@@ -206,15 +196,104 @@ async function runAgentOnTask(
 ): Promise<{ totalTokens: number; costUsd: string }> {
   const loopTracker = new LoopTracker(3);
 
-  // 1. Create Mastra agent instance
-  const { agent: mastraAgent, provider } = await createMastraAgent(dbAgent, checkedOutTask);
+  // 0. Validate workspace exists for workspace-dependent tasks
+  if (checkedOutTask.projectId) {
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, checkedOutTask.projectId),
+    });
+    if (!project?.workspacePath) {
+      const msg = `Project "${project?.name ?? checkedOutTask.projectId}" has no connected workspace. Connect a repository or local folder first.`;
+      console.warn(`[heartbeat] ${msg}`);
+      await logTaskEvent({
+        taskId: checkedOutTask.id,
+        agentId: dbAgent.id,
+        eventType: 'error',
+        payload: { message: msg },
+      });
+      throw new Error(msg);
+    }
 
-  // 2. Execute the agent
-  const result = await mastraAgent.generate(
-    `Process the following task:\n\nTitle: ${checkedOutTask.title}\n${
-      checkedOutTask.description ? `Description: ${checkedOutTask.description}` : ''
-    }`,
-  );
+    // Auto-create feature branch for implementation agents so they don't conflict on main
+    const isOrchestrator = dbAgent.domain === 'meta' && /orchestrat/i.test(dbAgent.role);
+    if (!isOrchestrator && project.workspacePath) {
+      const shortId = checkedOutTask.id.slice(0, 8);
+      const branchName = `vela/task-${shortId}`;
+      try {
+        await checkoutWorkspaceGitRef({
+          workspacePath: project.workspacePath,
+          ref: branchName,
+          createNew: true,
+        });
+        console.log(`[heartbeat] Created feature branch: ${branchName}`);
+      } catch {
+        // Branch may already exist from a previous attempt — try to check it out
+        try {
+          await checkoutWorkspaceGitRef({
+            workspacePath: project.workspacePath,
+            ref: branchName,
+          });
+          console.log(`[heartbeat] Checked out existing branch: ${branchName}`);
+        } catch (checkoutErr) {
+          console.warn(`[heartbeat] Could not create/checkout branch ${branchName}:`, checkoutErr);
+          // Non-fatal — agent can still work on whatever branch is current
+        }
+      }
+    }
+  }
+
+  // 1. Create Mastra agent instance
+  let { agent: mastraAgent, provider } = await createMastraAgent(dbAgent, checkedOutTask);
+
+  const prompt = `Process the following task:\n\nTitle: ${checkedOutTask.title}\n${
+    checkedOutTask.description ? `Description: ${checkedOutTask.description}` : ''
+  }`;
+  const generateOpts = { maxSteps: dbAgent.maxIterations ?? 10 };
+
+  // 2. Execute the agent (maxSteps allows multi-turn tool calling)
+  //    If the model fails (e.g. Ollama timeout), retry once with the cloud fallback.
+  let result;
+  try {
+    result = await mastraAgent.generate(prompt, generateOpts);
+  } catch (modelErr) {
+    if (provider === 'ollama') {
+      const reason = modelErr instanceof Error ? modelErr.message : String(modelErr);
+
+      // Look up the original model config's tier to pick an appropriate cloud fallback
+      let originalTier: string | null = 'standard';
+      if (dbAgent.modelConfigId) {
+        const origConfig = await db.query.modelConfigs.findFirst({
+          where: eq(modelConfigs.id, dbAgent.modelConfigId),
+        });
+        if (origConfig) originalTier = origConfig.tier;
+      }
+      const fallbackModel = getFallbackModelForTier(originalTier, checkedOutTask.priority);
+
+      console.warn(`[heartbeat] Ollama model failed, falling back to ${fallbackModel} (tier=${originalTier}, priority=${checkedOutTask.priority}): ${reason}`);
+
+      await logTaskEvent({
+        taskId: checkedOutTask.id,
+        agentId: dbAgent.id,
+        eventType: 'model_fallback',
+        payload: {
+          configured_provider: 'ollama',
+          original_tier: originalTier,
+          fallback_model: fallbackModel,
+          task_priority: checkedOutTask.priority,
+          reason,
+        },
+      });
+
+      // Rebuild the agent with the cloud fallback model forced via a patched dbAgent
+      const fallbackDbAgent = { ...dbAgent, modelConfigId: null };
+      const fallbackResult = await createMastraAgent(fallbackDbAgent, checkedOutTask, fallbackModel);
+      mastraAgent = fallbackResult.agent;
+      provider = fallbackResult.provider;
+
+      result = await mastraAgent.generate(prompt, generateOpts);
+    } else {
+      throw modelErr;
+    }
+  }
 
   // 3. Process tool calls through loop tracker
   // Prefer top-level `toolCalls` from Mastra getFullOutput(); step-level arrays can repeat the same ids.
@@ -261,8 +340,14 @@ async function runAgentOnTask(
     : 0;
   const inputTokens = result.usage?.inputTokens ?? 0;
   const outputTokens = result.usage?.outputTokens ?? 0;
-  // Local models (ollama) have zero dollar cost
-  const costUsd = provider === 'ollama' ? '0.000000' : estimateCostUsd(inputTokens, outputTokens);
+  // Local models (ollama) have zero dollar cost; cloud models use actual rates from DB
+  let costUsd: string;
+  if (provider === 'ollama') {
+    costUsd = '0.000000';
+  } else {
+    const rates = await getModelCostRates({ modelConfigId: dbAgent.modelConfigId });
+    costUsd = estimateCostUsd(inputTokens, outputTokens, rates.inputCostPerToken, rates.outputCostPerToken);
+  }
 
   await logTaskEvent({
     taskId: checkedOutTask.id,
@@ -286,6 +371,58 @@ async function runAgentOnTask(
   });
 
   return { totalTokens, costUsd };
+}
+
+function selectRuntimeWorkflow(
+  dbAgent: DbAgent,
+  task: Task,
+): WorkflowId | null {
+  if (dbAgent.agentKind !== 'runtime' || dbAgent.name !== 'Supervisor') {
+    return null;
+  }
+
+  const classification = classifyTaskMode(task);
+  return selectWorkflowForClassification(classification).workflowId;
+}
+
+async function runWorkflowOnTask(
+  dbAgent: DbAgent,
+  checkedOutTask: Task,
+  heartbeatId: string,
+  workflowId: WorkflowId,
+): Promise<{ totalTokens: number; costUsd: string }> {
+  await logTaskEvent({
+    taskId: checkedOutTask.id,
+    agentId: dbAgent.id,
+    eventType: 'workflow_route',
+    payload: {
+      workflow_id: workflowId,
+      classification: classifyTaskMode(checkedOutTask),
+    },
+  });
+
+  const workflow = getMastra().getWorkflow(workflowId);
+  const run = await workflow.createRun();
+  const result = await run.start({
+    inputData: {
+      taskId: checkedOutTask.id,
+      agentId: dbAgent.id,
+      heartbeatId,
+    },
+  });
+
+  if (result.status !== 'success') {
+    throw new Error(`Workflow "${workflowId}" exited with status "${result.status}"`);
+  }
+
+  const workflowResult = result.result as {
+    usage?: { totalTokens: number; totalCostUsd: string };
+  };
+
+  return {
+    totalTokens: workflowResult.usage?.totalTokens ?? 0,
+    costUsd: workflowResult.usage?.totalCostUsd ?? '0.000000',
+  };
 }
 
 /**
@@ -418,12 +555,20 @@ export async function executeHeartbeat(agentId: string): Promise<{
       payload: { from: 'open', to: 'in_progress', reason: 'Heartbeat checkout' },
     });
 
-    // 7. Run agent with loop detection
-    const { totalTokens, costUsd } = await runAgentOnTask(
-      dbAgent,
-      checkedOutTask,
-      heartbeatRecord.id,
-    );
+    // 7. Run either the workflow runtime path or the legacy agent path
+    const runtimeWorkflow = selectRuntimeWorkflow(dbAgent, checkedOutTask);
+    const { totalTokens, costUsd } = runtimeWorkflow
+      ? await runWorkflowOnTask(
+          dbAgent,
+          checkedOutTask,
+          heartbeatRecord.id,
+          runtimeWorkflow,
+        )
+      : await runAgentOnTask(
+          dbAgent,
+          checkedOutTask,
+          heartbeatRecord.id,
+        );
 
     // 8. Spend budget atomically (single UPDATE) — after execution so we know actual cost
     const budgetResult = await spendBudget(agentId, costUsd, checkedOutTask.id);
@@ -494,6 +639,8 @@ export async function executeHeartbeat(agentId: string): Promise<{
     // Log generic error on task; requeue so scheduled heartbeats can retry (they only checkout `open`).
     if (checkedOutTask) {
       try {
+        await incrementTaskFailureCount(checkedOutTask.id);
+
         await logTaskEvent({
           taskId: checkedOutTask.id,
           agentId,
@@ -637,11 +784,20 @@ export async function executeHeartbeatForTask(
         });
       }
 
-      const { totalTokens, costUsd } = await runAgentOnTask(
-        dbAgent,
-        { ...task, status: 'in_progress' },
-        heartbeatRecord.id,
-      );
+      const taskInProgress = { ...task, status: 'in_progress' } as Task;
+      const runtimeWorkflow = selectRuntimeWorkflow(dbAgent, taskInProgress);
+      const { totalTokens, costUsd } = runtimeWorkflow
+        ? await runWorkflowOnTask(
+            dbAgent,
+            taskInProgress,
+            heartbeatRecord.id,
+            runtimeWorkflow,
+          )
+        : await runAgentOnTask(
+            dbAgent,
+            taskInProgress,
+            heartbeatRecord.id,
+          );
 
       // Atomic budget spend
       const budgetResult = await spendBudget(dbAgent.id, costUsd, taskId);
@@ -707,6 +863,8 @@ export async function executeHeartbeatForTask(
       }
 
       try {
+        await incrementTaskFailureCount(taskId);
+
         await logTaskEvent({
           taskId,
           eventType: 'error',

@@ -8,8 +8,8 @@
 
 import cron, { type ScheduledTask } from 'node-cron';
 import { db } from '@/lib/db';
-import { agents } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
+import { agents, tasks } from '@/lib/db/schema';
+import { eq, and, lt, isNotNull, sql } from 'drizzle-orm';
 import { executeHeartbeat } from './heartbeat';
 
 // In-memory registry of active cron jobs, keyed by agent ID
@@ -41,9 +41,16 @@ export async function initializeScheduler(): Promise<void> {
       }
     }
 
+    // Schedule stale lock cleanup every 5 minutes
+    cron.schedule('*/5 * * * *', () => {
+      cleanupStaleLocks().catch((err) => {
+        console.error('[scheduler] Stale lock cleanup error:', err);
+      });
+    });
+
     isInitialized = true;
     console.log(
-      `[scheduler] Initialized: ${scheduled} agents scheduled out of ${activeAgents.length} active`,
+      `[scheduler] Initialized: ${scheduled} agents scheduled out of ${activeAgents.length} active (+ stale lock cleanup)`,
     );
   } catch (err) {
     console.error('[scheduler] Failed to initialize:', err);
@@ -126,6 +133,30 @@ export function stopAll(): void {
   }
   cronJobs.clear();
   isInitialized = false;
+}
+
+/**
+ * Release locks on tasks stuck in in_progress with a locked_at older than 10 minutes.
+ * Requeues them to open so they can be retried.
+ */
+async function cleanupStaleLocks(): Promise<void> {
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+
+  const staleTasks = await db
+    .update(tasks)
+    .set({ status: 'open', lockedBy: null, lockedAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(tasks.status, 'in_progress'),
+        isNotNull(tasks.lockedAt),
+        lt(tasks.lockedAt, tenMinutesAgo),
+      ),
+    )
+    .returning({ id: tasks.id });
+
+  if (staleTasks.length > 0) {
+    console.log(`[scheduler] Released ${staleTasks.length} stale task lock(s): ${staleTasks.map((t) => t.id).join(', ')}`);
+  }
 }
 
 /**

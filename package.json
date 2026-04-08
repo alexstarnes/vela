@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:orchestration && npm run eval:routing",
+    "test:unit": "npm run test:orchestration",
+    "test:orchestration": "node --import tsx --test src/lib/orchestration/*.test.ts src/lib/mastra/evals/*.test.ts",
+    "eval:routing": "tsx scripts/run-routing-evals.ts",
     "dev": "next dev",
     "dev:mastra": "mastra dev",
     "dev:helper": "tsx scripts/vela-helper.ts",

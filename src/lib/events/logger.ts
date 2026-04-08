@@ -16,7 +16,16 @@ export type EventType =
   | 'loop_detected'
   | 'approval_request'
   | 'approval_response'
-  | 'model_fallback';
+  | 'model_fallback'
+  | 'model_escalation'
+  | 'verification'
+  | 'workflow_route'
+  | 'repo_map'
+  | 'review'
+  | 'approval_gate'
+  | 'routing_tuning'
+  | 'scorecard'
+  | 'mode_selection';
 
 export interface LogEventParams {
   taskId: string;

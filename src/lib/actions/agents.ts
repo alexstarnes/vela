@@ -39,6 +39,7 @@ export async function createAgent(
     .values({
       name: data.name,
       role: data.role,
+      agentKind: 'runtime',
       systemPrompt: data.systemPrompt,
       modelConfigId: data.modelConfigId,
       projectId: data.projectId,
@@ -113,8 +114,9 @@ export async function deleteAgent(id: string): Promise<ActionResult> {
   return { success: true, data: undefined };
 }
 
-export async function listAgents() {
+export async function listAgents(options?: { includeLegacy?: boolean }) {
   return db.query.agents.findMany({
+    where: options?.includeLegacy ? undefined : eq(agents.agentKind, 'runtime'),
     orderBy: (a, { desc }) => [desc(a.createdAt)],
     with: {
       modelConfig: true,

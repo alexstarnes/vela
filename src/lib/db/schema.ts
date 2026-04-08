@@ -78,7 +78,8 @@ export const agents = pgTable('agents', {
   parentId: uuid('parent_id'), // self-ref
   name: text('name').notNull(),
   role: text('role').notNull(),
-  domain: text('domain').notNull().default('meta'), // 'meta' | 'product' | 'architecture' | 'implementation' | 'quality' | 'operations'
+  domain: text('domain').notNull().default('implementation'), // 'meta' | 'product' | 'architecture' | 'implementation' | 'quality' | 'operations'
+  agentKind: text('agent_kind').notNull().default('runtime'), // 'runtime' | 'legacy_reference'
   systemPrompt: text('system_prompt'),
   modelConfigId: uuid('model_config_id').references(() => modelConfigs.id),
   budgetMonthlyUsd: numeric('budget_monthly_usd', { precision: 10, scale: 2 }),
@@ -87,6 +88,7 @@ export const agents = pgTable('agents', {
   heartbeatCron: text('heartbeat_cron'),
   heartbeatEnabled: boolean('heartbeat_enabled').notNull().default(true),
   maxIterations: integer('max_iterations').notNull().default(10),
+  requiresApproval: boolean('requires_approval').notNull().default(false),
   status: text('status').notNull().default('active'), // 'active' | 'paused' | 'budget_exceeded'
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -126,6 +128,9 @@ export const tasks = pgTable('tasks', {
   description: text('description'),
   status: text('status').notNull().default('backlog'),
   priority: text('priority').notNull().default('medium'), // 'low' | 'medium' | 'high' | 'urgent'
+  failureCount: integer('failure_count').notNull().default(0),
+  modeScore: integer('mode_score'),
+  workflowType: text('workflow_type'), // 'feature' | 'high_risk' | 'debug'
   lockedBy: uuid('locked_by').references(() => agents.id),
   lockedAt: timestamp('locked_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -170,7 +175,7 @@ export const approvals = pgTable('approvals', {
   id: uuid('id').primaryKey().defaultRandom(),
   agentId: uuid('agent_id').notNull().references(() => agents.id),
   taskId: uuid('task_id').references(() => tasks.id),
-  actionType: text('action_type').notNull(), // 'task_delegation' | 'budget_override' | 'agent_creation'
+  actionType: text('action_type').notNull(), // 'task_delegation' | 'budget_override' | 'agent_creation' | 'high_risk_change'
   description: text('description').notNull(),
   payload: jsonb('payload'),
   status: text('status').notNull().default('pending'), // 'pending' | 'approved' | 'rejected'

@@ -1,9 +1,10 @@
 import 'dotenv/config';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, inArray, notInArray } from 'drizzle-orm';
 import postgres from 'postgres';
 import { requireFencedSystemPromptForSeed } from '@/lib/agent-orchestration/reference-docs';
 import * as schema from './schema';
+import { runtimeAgentDefinitions } from '@/lib/mastra/agents';
 
 const client = postgres(process.env.DATABASE_URL!);
 const db = drizzle(client, { schema });
@@ -74,11 +75,35 @@ const defaultModels = [
     maxContextTokens: 32768,
     isAvailable: true,
   },
+  {
+    name: 'GPT-4o mini',
+    provider: 'openai',
+    modelId: 'gpt-4o-mini',
+    tier: 'fast',
+    isLocal: false,
+    endpointUrl: null,
+    inputCostPer1m: '0.1500',
+    outputCostPer1m: '0.6000',
+    maxContextTokens: 128000,
+    isAvailable: true,
+  },
+  {
+    name: 'GPT-5.4 mini',
+    provider: 'openai',
+    modelId: 'gpt-5.4-mini',
+    tier: 'standard',
+    isLocal: false,
+    endpointUrl: null,
+    inputCostPer1m: '0.2500',
+    outputCostPer1m: '2.0000',
+    maxContextTokens: 128000,
+    isAvailable: true,
+  },
 ];
 
-// ─── Agents ──────────────────────────────────────────────────────
+// ─── Legacy reference agents ─────────────────────────────────────
 
-const defaultAgents: {
+const legacyReferenceAgents: {
   name: string;
   role: string;
   domain: string;
@@ -230,11 +255,60 @@ async function seed() {
     console.log(`    ✓ ${model.name} [${model.tier}]`);
   }
 
-  // 2. Upsert agents (template agents have no project)
-  console.log('\n  Agents:');
+  // 2. Upsert runtime agents (template agents have no project)
+  console.log('\n  Runtime agents:');
   const agentMap = new Map<string, string>();
 
-  for (const agent of defaultAgents) {
+  for (const agent of runtimeAgentDefinitions) {
+    const modelConfigId = modelMap.get(agent.defaultModelId)!;
+
+    const [existing] = await db
+      .select()
+      .from(schema.agents)
+      .where(and(eq(schema.agents.name, agent.name), isNull(schema.agents.projectId)))
+      .limit(1);
+
+    let agentId: string;
+    if (existing) {
+      await db
+        .update(schema.agents)
+        .set({
+          role: agent.role,
+          domain: agent.domain,
+          agentKind: 'runtime',
+          modelConfigId,
+          systemPrompt: agent.systemPrompt,
+          heartbeatEnabled: agent.heartbeatEnabled,
+          heartbeatCron: null,
+          status: 'active',
+        })
+        .where(eq(schema.agents.id, existing.id));
+      agentId = existing.id;
+    } else {
+      const [row] = await db
+        .insert(schema.agents)
+        .values({
+          name: agent.name,
+          role: agent.role,
+          domain: agent.domain,
+          agentKind: 'runtime',
+          modelConfigId,
+          systemPrompt: agent.systemPrompt,
+          heartbeatEnabled: agent.heartbeatEnabled,
+          heartbeatCron: null,
+          status: 'active',
+        })
+        .returning();
+      agentId = row.id;
+    }
+
+    agentMap.set(agent.name, agentId);
+    console.log(`    ✓ ${agent.name} [${agent.domain}] → ${agent.defaultModelId}`);
+  }
+
+  // 3. Upsert legacy reference agents and disable runtime behavior
+  console.log('\n  Legacy reference agents:');
+  for (const agent of legacyReferenceAgents) {
     const modelConfigId = modelMap.get(agent.defaultModelId)!;
     const systemPrompt = requireFencedSystemPromptForSeed(agent.name);
 
@@ -251,8 +325,11 @@ async function seed() {
         .set({
           role: agent.role,
           domain: agent.domain,
+          agentKind: 'legacy_reference',
           modelConfigId,
           systemPrompt,
+          heartbeatEnabled: false,
+          heartbeatCron: null,
         })
         .where(eq(schema.agents.id, existing.id));
       agentId = existing.id;
@@ -263,22 +340,25 @@ async function seed() {
           name: agent.name,
           role: agent.role,
           domain: agent.domain,
+          agentKind: 'legacy_reference',
           modelConfigId,
           systemPrompt,
+          heartbeatEnabled: false,
+          heartbeatCron: null,
         })
         .returning();
       agentId = row.id;
     }
 
     agentMap.set(agent.name, agentId);
-    console.log(`    ✓ ${agent.name} [${agent.domain}] → ${agent.defaultModelId}`);
+    console.log(`    ✓ ${agent.name} preserved as reference`);
   }
 
-  // 3. Seed agent ↔ model access matrix
+  // 4. Seed agent ↔ model access matrix
   console.log('\n  Model access:');
   let accessCount = 0;
 
-  for (const agent of defaultAgents) {
+  for (const agent of [...runtimeAgentDefinitions, ...legacyReferenceAgents]) {
     const agentId = agentMap.get(agent.name)!;
     for (const modelId of agent.allowedModelIds) {
       const modelConfigId = modelMap.get(modelId)!;
@@ -293,7 +373,45 @@ async function seed() {
   }
   console.log(`    ✓ ${accessCount} access entries`);
 
-  console.log(`\nDone. Seeded ${defaultModels.length} models, ${defaultAgents.length} agents.\n`);
+  // 5. Reassign in-flight work from legacy reference agents to Supervisor
+  const supervisorId = agentMap.get('Supervisor');
+  const legacyIds = legacyReferenceAgents
+    .map((agent) => agentMap.get(agent.name))
+    .filter((id): id is string => Boolean(id));
+
+  if (supervisorId && legacyIds.length > 0) {
+    const affectedTasks = await db.query.tasks.findMany({
+      where: and(
+        inArray(schema.tasks.assignedAgentId, legacyIds),
+        notInArray(schema.tasks.status, ['done', 'cancelled']),
+      ),
+    });
+
+    for (const task of affectedTasks) {
+      await db
+        .update(schema.tasks)
+        .set({
+          assignedAgentId: supervisorId,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.tasks.id, task.id));
+
+      await db.insert(schema.taskEvents).values({
+        taskId: task.id,
+        agentId: supervisorId,
+        eventType: 'assignment',
+        payload: {
+          assigned_to: supervisorId,
+          migration: 'phase1_v2_runtime_cutover',
+          reason: 'Reassigned from legacy reference agent to Supervisor during phase 1 cutover',
+        },
+      });
+    }
+
+    console.log(`    ✓ Reassigned ${affectedTasks.length} active task(s) to Supervisor`);
+  }
+
+  console.log(`\nDone. Seeded ${defaultModels.length} models, ${runtimeAgentDefinitions.length} runtime agents, and ${legacyReferenceAgents.length} legacy reference agents.\n`);
   await client.end();
 }
 

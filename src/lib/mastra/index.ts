@@ -6,6 +6,9 @@
  */
 
 import { Mastra } from '@mastra/core/mastra';
+import { debugWorkflow } from './workflows/debug-workflow';
+import { featureWorkflow } from './workflows/feature-workflow';
+import { highRiskWorkflow } from './workflows/high-risk-workflow';
 
 let _mastra: Mastra | null = null;
 
@@ -18,6 +21,7 @@ export function getMastra(): Mastra {
     _mastra = new Mastra({
       // No static agents — we create them dynamically per heartbeat
       agents: {},
+      workflows: { featureWorkflow, highRiskWorkflow, debugWorkflow },
     });
   }
   return _mastra;

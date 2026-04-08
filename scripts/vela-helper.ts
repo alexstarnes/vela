@@ -311,6 +311,61 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
       return;
     }
 
+    if (request.method === 'POST' && url.pathname === '/workspace/git-add') {
+      if (typeof body.workspacePath !== 'string') {
+        throw new Error('workspacePath is required');
+      }
+      const files = Array.isArray(body.files) ? body.files.filter((f): f is string => typeof f === 'string') : ['.'];
+      const result = await runProcess('git', ['add', ...files], {
+        cwd: path.resolve(body.workspacePath),
+      });
+      if (result.exitCode !== 0) throw new Error(result.stderr || 'git add failed');
+      sendJson(response, 200, { ok: true, data: { stdout: result.stdout || 'staged' } });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/workspace/git-commit') {
+      if (typeof body.workspacePath !== 'string' || typeof body.message !== 'string') {
+        throw new Error('workspacePath and message are required');
+      }
+      const result = await runProcess('git', ['commit', '-m', body.message], {
+        cwd: path.resolve(body.workspacePath),
+      });
+      if (result.exitCode !== 0) throw new Error(result.stderr || 'git commit failed');
+      // Extract commit SHA from output
+      const shaMatch = result.stdout.match(/\[[\w/.-]+ ([a-f0-9]+)\]/);
+      const commitSha = shaMatch ? shaMatch[1] : null;
+      sendJson(response, 200, { ok: true, data: { stdout: result.stdout, commitSha } });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/workspace/git-push') {
+      if (typeof body.workspacePath !== 'string') {
+        throw new Error('workspacePath is required');
+      }
+      const remote = typeof body.remote === 'string' ? body.remote : 'origin';
+      const cwd = path.resolve(body.workspacePath);
+
+      // Build git args: optionally with auth header
+      const args: string[] = [];
+      if (typeof body.authToken === 'string') {
+        const basicAuth = Buffer.from(`x-access-token:${body.authToken}`).toString('base64');
+        args.push('-c', `http.extraHeader=AUTHORIZATION: Basic ${basicAuth}`);
+      }
+      args.push('push');
+
+      if (body.setUpstream === true) {
+        const branchResult = await runProcess('git', ['branch', '--show-current'], { cwd });
+        const currentBranch = branchResult.stdout.trim();
+        args.push('-u', remote, currentBranch);
+      }
+
+      const result = await runProcess('git', args, { cwd });
+      if (result.exitCode !== 0) throw new Error(result.stderr || 'git push failed');
+      sendJson(response, 200, { ok: true, data: { stdout: result.stdout || result.stderr || 'pushed' } });
+      return;
+    }
+
     if (request.method === 'POST' && url.pathname === '/workspace/git-checkout') {
       if (typeof body.workspacePath !== 'string' || typeof body.ref !== 'string') {
         throw new Error('workspacePath and ref are required');

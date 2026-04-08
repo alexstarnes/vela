@@ -10,6 +10,8 @@ You are a TypeScript developer experienced with the Mastra framework. You build 
 
 This is a **Mastra** project written in TypeScript. Mastra is a framework for building AI-powered applications and agents with a modern TypeScript stack. The Node.js runtime is `>=22.13.0`.
 
+Vela uses an embedded Mastra runtime under `src/lib/mastra` for real orchestration work. The top-level `src/mastra` tree is a standalone example/studio scaffold and is not the primary runtime path for the app.
+
 ## Commands
 
 ```bash
@@ -22,6 +24,8 @@ npm run build # Build a production-ready server
 | Folder                 | Description                                                                                                                              |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/mastra`           | Entry point for all Mastra-related code and configuration.                                                                               |
+| `src/lib/mastra`       | Embedded Vela runtime: dynamic agent factory, workflow orchestration, scheduler integration, and deterministic tools used by the app.    |
+| `src/lib/orchestration`| Deterministic orchestration helpers such as mode classification, prompt template injection, and escalation logic.                        |
 | `src/mastra/agents`    | Define and configure your agents - their behavior, goals, and tools.                                                                     |
 | `src/mastra/workflows` | Define multi-step workflows that orchestrate agents and tools together.                                                                  |
 | `src/mastra/tools`     | Create reusable tools that your agents can call                                                                                          |
@@ -45,7 +49,10 @@ Top-level files define how your Mastra project is configured, built, and connect
 ### Always do
 
 - Load the `mastra` skill before any Mastra-related work
-- Register new agents, tools, workflows, and scorers in `src/mastra/index.ts`
+- Prefer the embedded runtime in `src/lib/mastra` for Vela product orchestration changes
+- Keep orchestration workflow-first: agents reason, workflows orchestrate, tools execute deterministic operations
+- Register standalone/studio-facing agents, tools, workflows, and scorers in `src/mastra/index.ts` only when you are intentionally changing the scaffold example
+- Seed and preserve the 5 runtime agents (`Supervisor`, `Repo Mapper`, `Implementer`, `Reviewer`, `Verifier`) as the active product runtime model
 - Use schemas for tool inputs and outputs
 - Run `npm run build` to verify changes compile
 
@@ -54,6 +61,8 @@ Top-level files define how your Mastra project is configured, built, and connect
 - Never commit `.env` files or secrets
 - Never modify `node_modules` or Mastra's database files directly
 - Never hardcode API keys (always use environment variables)
+- Never bypass verification gates by asking an agent to “judge” build success without command output
+- Never reactivate legacy reference agents as scheduled runtime workers without an explicit migration decision
 
 ## Resources
 

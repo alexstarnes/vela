@@ -73,7 +73,7 @@ const RejectSchema = z.object({
  * Approve a pending approval request.
  *
  * For task_delegation: creates the subtask and transitions the parent task
- * back to in_progress.
+ * back to open so the heartbeat scheduler can resume it.
  */
 export async function approveApproval(input: unknown): Promise<ActionResult> {
   const parsed = ApproveSchema.safeParse(input);
@@ -166,17 +166,17 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
       });
     }
 
-    // Transition parent task back to in_progress
+    // Requeue parent task so scheduled heartbeats can resume it
     const parentTask = await db.query.tasks.findFirst({
       where: eq(tasks.id, approval.taskId),
     });
 
     if (parentTask && parentTask.status === 'waiting_for_human') {
       try {
-        assertValidTransition(parentTask.status as TaskStatus, 'in_progress');
+        assertValidTransition(parentTask.status as TaskStatus, 'open');
         await db
           .update(tasks)
-          .set({ status: 'in_progress', updatedAt: new Date() })
+          .set({ status: 'open', updatedAt: new Date() })
           .where(eq(tasks.id, approval.taskId));
 
         await logTaskEvent({
@@ -185,8 +185,8 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
           eventType: 'status_change',
           payload: {
             from: 'waiting_for_human',
-            to: 'in_progress',
-            reason: 'Approval granted — delegation approved',
+            to: 'open',
+            reason: 'Approval granted — task requeued for workflow execution',
           },
         });
       } catch {
@@ -204,7 +204,7 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
 /**
  * Reject a pending approval request.
  *
- * Transitions the parent task back to in_progress with a rejection message.
+ * Requeues the parent task with a rejection message.
  */
 export async function rejectApproval(input: unknown): Promise<ActionResult> {
   const parsed = RejectSchema.safeParse(input);
@@ -248,17 +248,17 @@ export async function rejectApproval(input: unknown): Promise<ActionResult> {
       },
     });
 
-    // Transition parent task back to in_progress
+    // Requeue parent task so the user can update or retry it
     const parentTask = await db.query.tasks.findFirst({
       where: eq(tasks.id, approval.taskId),
     });
 
     if (parentTask && parentTask.status === 'waiting_for_human') {
       try {
-        assertValidTransition(parentTask.status as TaskStatus, 'in_progress');
+        assertValidTransition(parentTask.status as TaskStatus, 'open');
         await db
           .update(tasks)
-          .set({ status: 'in_progress', updatedAt: new Date() })
+          .set({ status: 'open', updatedAt: new Date() })
           .where(eq(tasks.id, approval.taskId));
 
         await logTaskEvent({
@@ -267,8 +267,8 @@ export async function rejectApproval(input: unknown): Promise<ActionResult> {
           eventType: 'status_change',
           payload: {
             from: 'waiting_for_human',
-            to: 'in_progress',
-            reason: 'Approval rejected — delegation denied',
+            to: 'open',
+            reason: 'Approval rejected — task requeued for revision',
           },
         });
       } catch {
@@ -290,7 +290,7 @@ export async function rejectApproval(input: unknown): Promise<ActionResult> {
 export async function createApprovalRequest(input: {
   agentId: string;
   taskId: string;
-  actionType: 'task_delegation' | 'budget_override' | 'agent_creation';
+  actionType: 'task_delegation' | 'budget_override' | 'agent_creation' | 'high_risk_change';
   description: string;
   payload?: Record<string, unknown>;
 }): Promise<{ approvalId: string }> {

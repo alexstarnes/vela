@@ -8,6 +8,7 @@
 // in_progress → blocked
 // review → done
 // review → in_progress
+// waiting_for_human → open
 // waiting_for_human → in_progress
 // blocked → open
 // Any → cancelled
@@ -37,7 +38,7 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   in_progress: ['review', 'waiting_for_human', 'open', 'blocked', 'cancelled'],
   review: ['done', 'in_progress', 'cancelled'],
   done: ['cancelled'],
-  waiting_for_human: ['in_progress', 'cancelled'],
+  waiting_for_human: ['open', 'in_progress', 'cancelled'],
   blocked: ['open', 'cancelled'],
   cancelled: [],
 };
