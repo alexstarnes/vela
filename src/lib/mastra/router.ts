@@ -3,10 +3,10 @@
  *
  * Priority order:
  *   1. Local (Ollama) — free, lowest latency
- *   2. Free cloud (Billdun) — free endpoints, preferred over paid
+ *   2. Free cloud (NVIDIA Build) — free endpoints, preferred over paid
  *   3. Paid cloud (Anthropic, OpenAI) — last resort
  *
- * Fallback: if Ollama ping fails, try Billdun; if Billdun is also down, use paid cloud.
+ * Fallback: if Ollama ping fails, try NVIDIA Build; if NVIDIA Build is also down, use paid cloud.
  */
 
 import { db } from '@/lib/db';
@@ -21,11 +21,11 @@ import { applyRoutingTierFloor } from '@/lib/orchestration/routing-tuning';
 import { selectWorkflowForClassification } from '@/lib/orchestration/workflow-selector';
 
 const OLLAMA_TIMEOUT_MS = 3000;
-const BILLDUN_TIMEOUT_MS = 5000;
+const NVIDIA_TIMEOUT_MS = 5000;
 export const FALLBACK_MODEL = 'anthropic/claude-sonnet-4-5';
 
-/** Billdun model to use when falling back from a given tier (free cloud). */
-const BILLDUN_TIER_EQUIV: Record<string, string> = {
+/** NVIDIA Build model to use when falling back from a given tier (free cloud). */
+const NVIDIA_TIER_EQUIV: Record<string, string> = {
   fast: 'phi-3.5-mini-instruct',
   standard: 'gemma-2-27b-it',
 };
@@ -88,16 +88,16 @@ export async function checkOllamaHealth(tunnelUrl: string): Promise<boolean> {
 }
 
 /**
- * Check whether the Billdun free endpoint is reachable.
+ * Check whether the NVIDIA Build free endpoint is reachable.
  */
-export async function checkBilldunHealth(apiUrl: string): Promise<boolean> {
+export async function checkNvidiaHealth(apiUrl: string): Promise<boolean> {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), BILLDUN_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), NVIDIA_TIMEOUT_MS);
     const res = await fetch(`${apiUrl}/models`, {
       method: 'GET',
       signal: controller.signal,
-      headers: billdunHeaders(),
+      headers: nvidiaHeaders(),
     });
     clearTimeout(timeoutId);
     return res.ok;
@@ -106,57 +106,57 @@ export async function checkBilldunHealth(apiUrl: string): Promise<boolean> {
   }
 }
 
-/** Build auth headers for Billdun requests. */
-function billdunHeaders(): Record<string, string> {
-  const key = process.env.BILLDUN_API_KEY;
+/** Build auth headers for NVIDIA Build requests. */
+function nvidiaHeaders(): Record<string, string> {
+  const key = process.env.NVIDIA_API_KEY;
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
 /**
- * Create a LanguageModel instance for a Billdun model via OpenAI-compatible API.
+ * Create a LanguageModel instance for a NVIDIA Build model via OpenAI-compatible API.
  */
-function createBilldunModel(modelId: string, apiUrl: string): LanguageModelV3 {
-  const billdun = createOpenAICompatible({
-    name: 'billdun',
+function createNvidiaModel(modelId: string, apiUrl: string): LanguageModelV3 {
+  const nvidia = createOpenAICompatible({
+    name: 'nvidia',
     baseURL: apiUrl,
-    apiKey: process.env.BILLDUN_API_KEY || 'billdun-free',
+    apiKey: process.env.NVIDIA_API_KEY || 'nvidia-build',
   });
-  return billdun.chatModel(modelId);
+  return nvidia.chatModel(modelId);
 }
 
 /**
- * Try to resolve a Billdun free-tier model as a fallback.
- * Returns null if Billdun is offline or no equivalent model exists for the tier.
+ * Try to resolve a NVIDIA Build free-tier model as a fallback.
+ * Returns null if NVIDIA Build is offline or no equivalent model exists for the tier.
  */
-async function tryBilldunFallback(
+async function tryNvidiaFallback(
   tier: string,
   taskId?: string,
   agentId?: string,
 ): Promise<ResolvedModel | null> {
-  const billdunModelId = BILLDUN_TIER_EQUIV[tier];
-  if (!billdunModelId) return null;
+  const nvidiaModelId = NVIDIA_TIER_EQUIV[tier];
+  if (!nvidiaModelId) return null;
 
-  const apiUrl = process.env.BILLDUN_API_URL;
+  const apiUrl = process.env.NVIDIA_API_URL;
   if (!apiUrl) return null;
 
-  const isOnline = await checkBilldunHealth(apiUrl);
+  const isOnline = await checkNvidiaHealth(apiUrl);
   if (!isOnline) return null;
 
   if (taskId) {
-    await logFallbackEvent(taskId, agentId, `ollama(offline)`, `Billdun free model ${billdunModelId}`);
+    await logFallbackEvent(taskId, agentId, `ollama(offline)`, `NVIDIA Build free model ${nvidiaModelId}`);
   }
 
   return {
-    modelId: createBilldunModel(billdunModelId, apiUrl),
+    modelId: createNvidiaModel(nvidiaModelId, apiUrl),
     isFallback: true,
-    provider: 'billdun',
+    provider: 'nvidia',
   };
 }
 
 /**
  * Resolve the model for an agent, given its model_config_id.
  * If the configured model is Ollama and the tunnel is offline,
- * tries Billdun free cloud first, then falls back to paid cloud.
+ * tries NVIDIA Build free cloud first, then falls back to paid cloud.
  */
 export async function resolveModel(
   modelConfigId: string | null,
@@ -273,43 +273,43 @@ export async function resolveModel(
       };
     }
 
-    // Ollama offline — try free Billdun cloud before paid fallback
-    console.warn(`[router] Ollama offline at ${tunnelUrl}, trying Billdun free tier`);
-    const billdunResult = await tryBilldunFallback(config.tier, taskId, agentId);
-    if (billdunResult) return billdunResult;
+    // Ollama offline — try free NVIDIA Build cloud before paid fallback
+    console.warn(`[router] Ollama offline at ${tunnelUrl}, trying NVIDIA Build free tier`);
+    const nvidiaResult = await tryNvidiaFallback(config.tier, taskId, agentId);
+    if (nvidiaResult) return nvidiaResult;
 
-    // Billdun also unavailable — fall to paid cloud
+    // NVIDIA Build also unavailable — fall to paid cloud
     const paidFallback = getFallbackModelForTier(config.tier);
-    console.warn(`[router] Billdun unavailable, falling back to paid: ${paidFallback}`);
-    await logFallbackEvent(taskId, agentId, config.modelId, `Ollama unreachable at ${tunnelUrl}, Billdun also offline`);
+    console.warn(`[router] NVIDIA Build unavailable, falling back to paid: ${paidFallback}`);
+    await logFallbackEvent(taskId, agentId, config.modelId, `Ollama unreachable at ${tunnelUrl}, NVIDIA Build also offline`);
     return { modelId: paidFallback, isFallback: true, provider: paidFallback.split('/')[0] || 'anthropic' };
   }
 
-  // Billdun free cloud — check endpoint health first
-  if (config.provider === 'billdun') {
-    const apiUrl = config.endpointUrl || process.env.BILLDUN_API_URL;
+  // NVIDIA Build free cloud — check endpoint health first
+  if (config.provider === 'nvidia') {
+    const apiUrl = config.endpointUrl || process.env.NVIDIA_API_URL;
 
     if (!apiUrl) {
-      console.warn('[router] No BILLDUN_API_URL configured, falling back to paid cloud');
+      console.warn('[router] No NVIDIA_API_URL configured, falling back to paid cloud');
       const paidFallback = getFallbackModelForTier(config.tier);
-      await logFallbackEvent(taskId, agentId, config.modelId, 'No Billdun API URL configured');
+      await logFallbackEvent(taskId, agentId, config.modelId, 'No NVIDIA Build API URL configured');
       return { modelId: paidFallback, isFallback: true, provider: paidFallback.split('/')[0] || 'anthropic' };
     }
 
-    const isOnline = await checkBilldunHealth(apiUrl);
+    const isOnline = await checkNvidiaHealth(apiUrl);
 
     if (isOnline) {
       return {
-        modelId: createBilldunModel(config.modelId, apiUrl),
+        modelId: createNvidiaModel(config.modelId, apiUrl),
         isFallback: false,
-        provider: 'billdun',
+        provider: 'nvidia',
       };
     }
 
-    // Billdun offline — fall to paid cloud
+    // NVIDIA Build offline — fall to paid cloud
     const paidFallback = getFallbackModelForTier(config.tier);
-    console.warn(`[router] Billdun offline at ${apiUrl}, falling back to paid: ${paidFallback}`);
-    await logFallbackEvent(taskId, agentId, config.modelId, `Billdun unreachable at ${apiUrl}`);
+    console.warn(`[router] NVIDIA Build offline at ${apiUrl}, falling back to paid: ${paidFallback}`);
+    await logFallbackEvent(taskId, agentId, config.modelId, `NVIDIA Build unreachable at ${apiUrl}`);
     return { modelId: paidFallback, isFallback: true, provider: paidFallback.split('/')[0] || 'anthropic' };
   }
 
@@ -389,9 +389,9 @@ export async function listAvailableModels(): Promise<
       if (c.provider === 'ollama') {
         const tunnelUrl = c.endpointUrl || process.env.OLLAMA_TUNNEL_URL;
         isOnline = tunnelUrl ? await checkOllamaHealth(tunnelUrl) : false;
-      } else if (c.provider === 'billdun') {
-        const apiUrl = c.endpointUrl || process.env.BILLDUN_API_URL;
-        isOnline = apiUrl ? await checkBilldunHealth(apiUrl) : false;
+      } else if (c.provider === 'nvidia') {
+        const apiUrl = c.endpointUrl || process.env.NVIDIA_API_URL;
+        isOnline = apiUrl ? await checkNvidiaHealth(apiUrl) : false;
       }
       return {
         id: c.id,

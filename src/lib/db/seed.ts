@@ -99,10 +99,10 @@ const defaultModels = [
     maxContextTokens: 128000,
     isAvailable: true,
   },
-  // Free cloud (Billdun) — preferred over paid when local is offline
+  // Free cloud (NVIDIA Build) — preferred over paid when local is offline
   {
     name: 'Phi 3.5 Mini Instruct (Free)',
-    provider: 'billdun',
+    provider: 'nvidia',
     modelId: 'phi-3.5-mini-instruct',
     tier: 'fast',
     isLocal: false,
@@ -114,7 +114,7 @@ const defaultModels = [
   },
   {
     name: 'Mamba Codestral 7B (Free)',
-    provider: 'billdun',
+    provider: 'nvidia',
     modelId: 'mamba-codestral-7b-v0.1',
     tier: 'fast',
     isLocal: false,
@@ -126,7 +126,7 @@ const defaultModels = [
   },
   {
     name: 'Gemma 2 27B IT (Free)',
-    provider: 'billdun',
+    provider: 'nvidia',
     modelId: 'gemma-2-27b-it',
     tier: 'standard',
     isLocal: false,
@@ -138,7 +138,7 @@ const defaultModels = [
   },
   {
     name: 'Phi 3 Medium 128K Instruct (Free)',
-    provider: 'billdun',
+    provider: 'nvidia',
     modelId: 'phi-3-medium-128k-instruct',
     tier: 'standard',
     isLocal: false,
