@@ -18,6 +18,6 @@ Constraints:
 - do not invent file paths
 - do not mark the task complete; the workflow handles final status after verification`,
   defaultModelId: 'qwen3-coder-next:Q4_K_M',
-  allowedModelIds: ['qwen3-coder-next:Q4_K_M', 'gpt-5.4-mini', 'claude-sonnet-4-5'],
+  allowedModelIds: ['qwen3-coder-next:Q4_K_M', 'mamba-codestral-7b-v0.1', 'phi-3-medium-128k-instruct', 'gpt-5.4-mini', 'claude-sonnet-4-5'],
   heartbeatEnabled: false,
 } as const;

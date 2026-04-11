@@ -18,6 +18,6 @@ Constraints:
 - do not make security-sensitive decisions without surfacing them clearly
 - prefer the minimum viable plan that can be executed safely`,
   defaultModelId: 'claude-sonnet-4-5',
-  allowedModelIds: ['claude-sonnet-4-5', 'gpt-5.4-mini', 'claude-opus-4-6'],
+  allowedModelIds: ['claude-sonnet-4-5', 'gemma-2-27b-it', 'gpt-5.4-mini', 'claude-opus-4-6'],
   heartbeatEnabled: true,
 } as const;

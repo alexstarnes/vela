@@ -16,6 +16,6 @@ Constraints:
 - focus on correctness and risk, not stylistic preference
 - do not modify code directly`,
   defaultModelId: 'gpt-5.4-mini',
-  allowedModelIds: ['gpt-5.4-mini', 'claude-sonnet-4-5', 'claude-opus-4-6'],
+  allowedModelIds: ['gpt-5.4-mini', 'gemma-2-27b-it', 'phi-3-medium-128k-instruct', 'claude-sonnet-4-5', 'claude-opus-4-6'],
   heartbeatEnabled: false,
 } as const;

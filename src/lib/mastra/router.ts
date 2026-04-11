@@ -1,9 +1,12 @@
 /**
  * Model Router — resolves the correct language model for a given agent/model config.
  *
- * Tier 1 (cloud): Anthropic Claude via ANTHROPIC_API_KEY
- * Tier 2 (local): Ollama via OLLAMA_TUNNEL_URL — tested with HEAD request, 3s timeout
- * Fallback: if Ollama ping fails, log model_fallback event, use Claude Sonnet
+ * Priority order:
+ *   1. Local (Ollama) — free, lowest latency
+ *   2. Free cloud (Billdun) — free endpoints, preferred over paid
+ *   3. Paid cloud (Anthropic, OpenAI) — last resort
+ *
+ * Fallback: if Ollama ping fails, try Billdun; if Billdun is also down, use paid cloud.
  */
 
 import { db } from '@/lib/db';
@@ -18,16 +21,23 @@ import { applyRoutingTierFloor } from '@/lib/orchestration/routing-tuning';
 import { selectWorkflowForClassification } from '@/lib/orchestration/workflow-selector';
 
 const OLLAMA_TIMEOUT_MS = 3000;
+const BILLDUN_TIMEOUT_MS = 5000;
 export const FALLBACK_MODEL = 'anthropic/claude-sonnet-4-5';
 
-/** Tier-aware cloud fallback: simple tasks don't need Sonnet. */
+/** Billdun model to use when falling back from a given tier (free cloud). */
+const BILLDUN_TIER_EQUIV: Record<string, string> = {
+  fast: 'phi-3.5-mini-instruct',
+  standard: 'gemma-2-27b-it',
+};
+
+/** Tier-aware *paid* cloud fallback — used only when both local and free cloud are offline. */
 const TIER_FALLBACK: Record<string, string> = {
   fast: 'openai/gpt-4o-mini',
   standard: 'openai/gpt-5.4-mini',
   premium: 'anthropic/claude-sonnet-4-5',
 };
 
-/** High-priority tasks bump up one tier. */
+/** High-priority tasks bump up one tier (paid). */
 const TIER_FALLBACK_HIGH: Record<string, string> = {
   fast: 'openai/gpt-5.4-mini',
   standard: 'anthropic/claude-sonnet-4-5',
@@ -78,9 +88,75 @@ export async function checkOllamaHealth(tunnelUrl: string): Promise<boolean> {
 }
 
 /**
+ * Check whether the Billdun free endpoint is reachable.
+ */
+export async function checkBilldunHealth(apiUrl: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), BILLDUN_TIMEOUT_MS);
+    const res = await fetch(`${apiUrl}/models`, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: billdunHeaders(),
+    });
+    clearTimeout(timeoutId);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Build auth headers for Billdun requests. */
+function billdunHeaders(): Record<string, string> {
+  const key = process.env.BILLDUN_API_KEY;
+  return key ? { Authorization: `Bearer ${key}` } : {};
+}
+
+/**
+ * Create a LanguageModel instance for a Billdun model via OpenAI-compatible API.
+ */
+function createBilldunModel(modelId: string, apiUrl: string): LanguageModelV3 {
+  const billdun = createOpenAICompatible({
+    name: 'billdun',
+    baseURL: apiUrl,
+    apiKey: process.env.BILLDUN_API_KEY || 'billdun-free',
+  });
+  return billdun.chatModel(modelId);
+}
+
+/**
+ * Try to resolve a Billdun free-tier model as a fallback.
+ * Returns null if Billdun is offline or no equivalent model exists for the tier.
+ */
+async function tryBilldunFallback(
+  tier: string,
+  taskId?: string,
+  agentId?: string,
+): Promise<ResolvedModel | null> {
+  const billdunModelId = BILLDUN_TIER_EQUIV[tier];
+  if (!billdunModelId) return null;
+
+  const apiUrl = process.env.BILLDUN_API_URL;
+  if (!apiUrl) return null;
+
+  const isOnline = await checkBilldunHealth(apiUrl);
+  if (!isOnline) return null;
+
+  if (taskId) {
+    await logFallbackEvent(taskId, agentId, `ollama(offline)`, `Billdun free model ${billdunModelId}`);
+  }
+
+  return {
+    modelId: createBilldunModel(billdunModelId, apiUrl),
+    isFallback: true,
+    provider: 'billdun',
+  };
+}
+
+/**
  * Resolve the model for an agent, given its model_config_id.
  * If the configured model is Ollama and the tunnel is offline,
- * falls back to cloud and logs a model_fallback event (if taskId provided).
+ * tries Billdun free cloud first, then falls back to paid cloud.
  */
 export async function resolveModel(
   modelConfigId: string | null,
@@ -197,10 +273,44 @@ export async function resolveModel(
       };
     }
 
-    // Ollama offline — fallback
-    console.warn(`[router] Ollama offline at ${tunnelUrl}, falling back to ${FALLBACK_MODEL}`);
-    await logFallbackEvent(taskId, agentId, config.modelId, `Ollama unreachable at ${tunnelUrl}`);
-    return { modelId: FALLBACK_MODEL, isFallback: true, provider: 'anthropic' };
+    // Ollama offline — try free Billdun cloud before paid fallback
+    console.warn(`[router] Ollama offline at ${tunnelUrl}, trying Billdun free tier`);
+    const billdunResult = await tryBilldunFallback(config.tier, taskId, agentId);
+    if (billdunResult) return billdunResult;
+
+    // Billdun also unavailable — fall to paid cloud
+    const paidFallback = getFallbackModelForTier(config.tier);
+    console.warn(`[router] Billdun unavailable, falling back to paid: ${paidFallback}`);
+    await logFallbackEvent(taskId, agentId, config.modelId, `Ollama unreachable at ${tunnelUrl}, Billdun also offline`);
+    return { modelId: paidFallback, isFallback: true, provider: paidFallback.split('/')[0] || 'anthropic' };
+  }
+
+  // Billdun free cloud — check endpoint health first
+  if (config.provider === 'billdun') {
+    const apiUrl = config.endpointUrl || process.env.BILLDUN_API_URL;
+
+    if (!apiUrl) {
+      console.warn('[router] No BILLDUN_API_URL configured, falling back to paid cloud');
+      const paidFallback = getFallbackModelForTier(config.tier);
+      await logFallbackEvent(taskId, agentId, config.modelId, 'No Billdun API URL configured');
+      return { modelId: paidFallback, isFallback: true, provider: paidFallback.split('/')[0] || 'anthropic' };
+    }
+
+    const isOnline = await checkBilldunHealth(apiUrl);
+
+    if (isOnline) {
+      return {
+        modelId: createBilldunModel(config.modelId, apiUrl),
+        isFallback: false,
+        provider: 'billdun',
+      };
+    }
+
+    // Billdun offline — fall to paid cloud
+    const paidFallback = getFallbackModelForTier(config.tier);
+    console.warn(`[router] Billdun offline at ${apiUrl}, falling back to paid: ${paidFallback}`);
+    await logFallbackEvent(taskId, agentId, config.modelId, `Billdun unreachable at ${apiUrl}`);
+    return { modelId: paidFallback, isFallback: true, provider: paidFallback.split('/')[0] || 'anthropic' };
   }
 
   // Unknown provider
@@ -279,6 +389,9 @@ export async function listAvailableModels(): Promise<
       if (c.provider === 'ollama') {
         const tunnelUrl = c.endpointUrl || process.env.OLLAMA_TUNNEL_URL;
         isOnline = tunnelUrl ? await checkOllamaHealth(tunnelUrl) : false;
+      } else if (c.provider === 'billdun') {
+        const apiUrl = c.endpointUrl || process.env.BILLDUN_API_URL;
+        isOnline = apiUrl ? await checkBilldunHealth(apiUrl) : false;
       }
       return {
         id: c.id,

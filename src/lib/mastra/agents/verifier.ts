@@ -16,6 +16,6 @@ Constraints:
 - do not infer pass/fail from agent output
 - verification is mechanical, not opinion-based`,
   defaultModelId: 'qwen3:8b',
-  allowedModelIds: ['qwen3:8b', 'gpt-4o-mini'],
+  allowedModelIds: ['qwen3:8b', 'phi-3.5-mini-instruct', 'mamba-codestral-7b-v0.1', 'gpt-4o-mini'],
   heartbeatEnabled: false,
 } as const;

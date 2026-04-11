@@ -59,7 +59,7 @@ export const githubConnections = pgTable('github_connections', {
 export const modelConfigs = pgTable('model_configs', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
-  provider: text('provider').notNull(), // 'anthropic' | 'openai' | 'ollama'
+  provider: text('provider').notNull(), // 'anthropic' | 'openai' | 'ollama' | 'billdun'
   modelId: text('model_id').notNull().unique(),
   tier: text('tier').notNull(), // 'fast' | 'standard' | 'premium'
   isLocal: boolean('is_local').notNull().default(false),
