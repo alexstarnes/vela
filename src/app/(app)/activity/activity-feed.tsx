@@ -21,6 +21,15 @@ const EVENT_META: Record<string, { icon: string; color: string }> = {
   approval_request: { icon: '?', color: '#C27D1A' },
   approval_response: { icon: '✓', color: '#3D8B5C' },
   model_fallback: { icon: '⤷', color: '#C27D1A' },
+  verification: { icon: '⛨', color: '#3D8B5C' },
+  review: { icon: '☰', color: '#7C3AED' },
+  implementation_audit: { icon: '±', color: '#4A7AB5' },
+  workflow_route: { icon: '⇶', color: '#7C3AED' },
+  mode_selection: { icon: '◉', color: '#6B665A' },
+  repo_map: { icon: '▤', color: '#6B665A' },
+  model_escalation: { icon: '↑', color: '#C27D1A' },
+  routing_tuning: { icon: '≋', color: '#6B665A' },
+  scorecard: { icon: '∑', color: '#6B665A' },
 };
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -64,6 +73,38 @@ function formatContent(event: LiveEvent): string {
       return String(p.message ?? p.error ?? 'Error occurred').slice(0, 120);
     case 'approval_request':
       return String(p.description ?? 'Approval requested');
+    case 'verification': {
+      const gates = Array.isArray(p.gate_results)
+        ? (p.gate_results as Array<{ gate: string; status: string }>)
+        : [];
+      const blocking = Array.isArray(p.blocking_failures) ? p.blocking_failures.length : 0;
+      const informational = Array.isArray(p.informational_failures)
+        ? p.informational_failures.length
+        : 0;
+      return `Verification ${p.status === 'pass' ? 'PASSED' : p.status === 'fail' ? 'FAILED' : 'skipped'} (${p.policy}) — ${gates.map((g) => `${g.gate}: ${g.status}`).join(', ') || 'no gates'}${blocking > 0 ? ` · ${blocking} blocking` : ''}${informational > 0 ? ` · ${informational} informational` : ''}`;
+    }
+    case 'review':
+      return `Reviewer ${p.status === 'pass' ? 'PASSED' : 'requested rework'} — ${String(p.findings ?? '').slice(0, 160)}`;
+    case 'implementation_audit': {
+      const files = Array.isArray(p.changedFiles) ? p.changedFiles : [];
+      return `${String(p.diffSummary ?? '')} Files: ${files.join(', ') || 'none'}`;
+    }
+    case 'workflow_route':
+      return `Routed to ${p.workflow_id ?? 'workflow'}`;
+    case 'mode_selection':
+      return `Mode ${p.mode} (score ${p.score}/8) · tier ${p.effective_tier}`;
+    case 'model_fallback':
+      return String(p.reason ?? `Falling back to ${p.fallback_model ?? 'cloud model'}`).slice(0, 160);
+    case 'model_escalation':
+      return `Escalated tier ${p.from_tier} → ${p.to_tier} after ${p.failure_count} failure(s)`;
+    case 'repo_map':
+      return String(p.summary ?? '').slice(0, 160);
+    case 'scorecard':
+      return `${p.workflow_id ?? ''} · tier ${p.tier ?? '?'} · $${Number(p.totalCostUsd ?? 0).toFixed(4)} · ${p.verificationFailures ?? 0} verification failure(s)`;
+    case 'model_call':
+      return p.selected_model
+        ? `Routed to ${p.selected_model}${p.selection_kind ? ` (${String(p.selection_kind).replace(/_/g, ' ')})` : ''}`
+        : `${p.model ?? 'model'} · ${p.total_tokens ?? 0} tokens`;
     default:
       return JSON.stringify(p).slice(0, 100);
   }

@@ -25,7 +25,8 @@ export type EventType =
   | 'approval_gate'
   | 'routing_tuning'
   | 'scorecard'
-  | 'mode_selection';
+  | 'mode_selection'
+  | 'implementation_audit';
 
 export interface LogEventParams {
   taskId: string;

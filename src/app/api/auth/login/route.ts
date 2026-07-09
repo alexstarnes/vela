@@ -7,8 +7,14 @@ export async function POST(request: NextRequest) {
   const expectedPassword = process.env.VELA_PASSWORD;
 
   if (!expectedPassword) {
-    // If no password is set, allow any login (dev mode)
-    console.warn('VELA_PASSWORD not set — allowing any login');
+    // Fail closed in production: an unset password must never mean open access.
+    if (process.env.NODE_ENV === 'production') {
+      return NextResponse.json(
+        { error: 'Authentication is not configured. Set VELA_PASSWORD and restart.' },
+        { status: 503 },
+      );
+    }
+    console.warn('VELA_PASSWORD not set — allowing any login (development only)');
   } else if (password !== expectedPassword) {
     return NextResponse.json({ error: 'Invalid password' }, { status: 401 });
   }

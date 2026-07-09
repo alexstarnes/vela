@@ -13,19 +13,27 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Allow Next.js internals and static files
+  // Allow Next.js internals and static files — but never let API routes
+  // bypass auth via the dot heuristic.
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon') ||
-    pathname.includes('.')
+    (pathname.includes('.') && !pathname.startsWith('/api'))
   ) {
     return NextResponse.next();
   }
 
   const password = process.env.VELA_PASSWORD;
 
-  // If no password configured, allow all (dev mode)
   if (!password) {
+    // Fail closed in production: no configured password means no access.
+    if (process.env.NODE_ENV === 'production') {
+      return new NextResponse(
+        'Authentication is not configured (VELA_PASSWORD missing). Set it and restart the server.',
+        { status: 503 },
+      );
+    }
+    // Development convenience: allow all when no password is set.
     return NextResponse.next();
   }
 

@@ -84,7 +84,7 @@
                     ┌──────────┴──────────┐
                     │  Local Mac (M2 Max)  │
                     │  Ollama server       │
-                    │  - qwen3-coder-next  │
+                    │  - qwen2.5-coder:32b │
                     │  - qwen3:8b          │
                     └─────────────────────┘
 ```
@@ -528,9 +528,9 @@ const defaultModels = [
     max_context_tokens: 200000,
   },
   {
-    name: 'Qwen3-Coder-Next (Local)',
+    name: 'Qwen2.5-Coder 32B (Local)',
     provider: 'ollama',
-    model_id: 'qwen3-coder-next',
+    model_id: 'qwen2.5-coder:32b',
     tier: 'standard',
     is_local: true,
     endpoint_url: null, // Set via OLLAMA_TUNNEL_URL env
@@ -724,7 +724,7 @@ export async function resolveModel(modelConfigId: string): Promise<ModelClient> 
 ```ts
 // Base URL: OLLAMA_TUNNEL_URL + '/v1'
 // Uses standard OpenAI chat completions format
-// Model name: config.model_id (e.g., 'qwen3-coder-next')
+// Model name: config.model_id (e.g., 'qwen2.5-coder:32b')
 ```
 
 **Anthropic client** uses `@anthropic-ai/sdk` directly, or via Mastra's model router.
@@ -969,7 +969,7 @@ Default governance rules:
 | Tier | Cloud Model | Local Model | Use Case |
 |------|------------|-------------|----------|
 | fast | Claude Haiku 4.5 | Qwen3:8b | Routing, triage, simple summarization |
-| standard | Claude Sonnet 4 | Qwen3-Coder-Next | Code generation, complex reasoning |
+| standard | Claude Sonnet 4 | Qwen2.5-Coder 32B | Code generation, complex reasoning |
 | premium | Claude Sonnet 4 | (no local equivalent) | Critical tasks, complex multi-step |
 
 ### How Model Routing Works
@@ -983,7 +983,7 @@ Default governance rules:
 
 - Ollama exposes OpenAI-compatible API at `{OLLAMA_TUNNEL_URL}/v1/chat/completions`
 - Use the OpenAI SDK or fetch directly — same request format
-- Model name in request body: `model: "qwen3-coder-next"`
+- Model name in request body: `model: "qwen2.5-coder:32b"`
 - No API key needed (tunnel provides security)
 
 ### Cloudflare Tunnel Setup (Reference for User)

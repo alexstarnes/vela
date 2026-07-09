@@ -8,6 +8,7 @@ import { listSkills } from '@/lib/actions/skills';
 import Link from 'next/link';
 import { ChevronLeft } from 'lucide-react';
 import { ProjectDetailClient } from './project-detail-client';
+import { DevServerCard } from './dev-server-card';
 import type { ProjectConnectionStatus, ProjectSourceType } from '@/lib/db/schema';
 
 export default async function ProjectDetailPage({
@@ -182,6 +183,9 @@ export default async function ProjectDetailPage({
             </div>
           )}
         </div>
+
+        {/* Dev server control */}
+        {project.workspacePath && <DevServerCard projectId={project.id} />}
 
         {/* Tasks */}
         <div>

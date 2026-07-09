@@ -4,8 +4,10 @@ import { tasks } from '@/lib/db/schema';
 import { logTaskEvent } from '@/lib/events/logger';
 import { createMastraAgent } from '@/lib/mastra/agent-factory';
 import { getRuntimeAgentRow } from '@/lib/mastra/agents/runtime-agent-db';
-import { estimateCostUsd, getModelCostRates } from '@/lib/mastra/costs';
+import { isRouterModelAvailable } from '@/lib/mastra/router';
+import { getTaskExecutionPolicy } from '@/lib/orchestration/task-shape';
 import { eq } from 'drizzle-orm';
+import { createWorkflowStepTelemetry } from './agent-telemetry';
 import { reviewedOutcomeWorkflowSchema, workflowOutputSchema } from './shared';
 
 function synthesizeModelOverride(workflowId: string, score: number): string | undefined {
@@ -32,12 +34,44 @@ export const synthesizeTaskStep = createStep({
 
     if (!task) throw new Error(`Task ${inputData.taskId} not found`);
     if (!supervisor) throw new Error('Runtime Supervisor agent not found');
+    if (inputData.outcome.kind !== 'review_ready') {
+      const summary = [
+        `${task.title}: ${inputData.implementationAudit.diffSummary}`,
+        `Outcome: ${inputData.outcome.reason}`,
+      ].join('\n\n');
 
-    const modelOverride = synthesizeModelOverride(
+      await logTaskEvent({
+        taskId: task.id,
+        agentId: supervisor.id,
+        eventType: 'message',
+        payload: { role: 'system', content: summary },
+      });
+
+      return {
+        ...inputData,
+        summary,
+      };
+    }
+
+    const preferredOverride = synthesizeModelOverride(
       inputData.workflowSelection.workflowId,
       inputData.classification.score,
     );
+    // Skip the hardcoded override when that model is disabled in model configs;
+    // the router then resolves the Supervisor's configured model instead.
+    const modelOverride =
+      preferredOverride && (await isRouterModelAvailable(preferredOverride))
+        ? preferredOverride
+        : undefined;
     const { agent, resolvedModelId } = await createMastraAgent(supervisor, task, modelOverride);
+    const executionPolicy = getTaskExecutionPolicy(task);
+    const telemetry = createWorkflowStepTelemetry({
+      taskId: task.id,
+      agentId: supervisor.id,
+      stepId: 'synthesize-task',
+      modelConfigId: modelOverride ? null : supervisor.modelConfigId,
+      resolvedModelId: modelOverride ?? resolvedModelId ?? 'anthropic/claude-sonnet-4-5',
+    });
 
     const response = await agent.generate(
       `Summarize the completed workflow run.
@@ -58,37 +92,36 @@ Outcome: ${inputData.outcome.reason}
 Return:
 - 1 short paragraph on what changed
 - 1 short paragraph on the outcome and next action`,
-      { maxSteps: Math.min(supervisor.maxIterations ?? 6, 4) },
+      {
+        maxSteps: Math.min(
+          supervisor.maxIterations ?? executionPolicy.maxSteps.synthesize,
+          executionPolicy.maxSteps.synthesize,
+        ),
+        modelSettings: {
+          maxOutputTokens: executionPolicy.maxOutputTokens.synthesize,
+        },
+        onStepFinish: telemetry.onStepFinish,
+        onIterationComplete: telemetry.onIterationComplete,
+        abortSignal: telemetry.abortSignal,
+      },
     );
-
-    const inputTokens = response.usage?.inputTokens ?? 0;
-    const outputTokens = response.usage?.outputTokens ?? 0;
-    const rates = await getModelCostRates({
-      modelConfigId: modelOverride ? null : supervisor.modelConfigId,
-      resolvedModelId: modelOverride ?? resolvedModelId ?? 'anthropic/claude-sonnet-4-5',
-    });
-    const costUsd = estimateCostUsd(
-      inputTokens,
-      outputTokens,
-      rates.inputCostPerToken,
-      rates.outputCostPerToken,
-    );
+    const usageTotals = telemetry.getUsageTotals();
 
     await logTaskEvent({
       taskId: task.id,
       agentId: supervisor.id,
       eventType: 'message',
       payload: { role: 'system', content: response.text },
-      tokensUsed: inputTokens + outputTokens,
-      costUsd,
     });
 
     return {
       ...inputData,
       summary: response.text,
       usage: {
-        totalTokens: inputData.usage.totalTokens + inputTokens + outputTokens,
-        totalCostUsd: (parseFloat(inputData.usage.totalCostUsd) + parseFloat(costUsd)).toFixed(6),
+        totalTokens: inputData.usage.totalTokens + usageTotals.totalTokens,
+        totalCostUsd: (
+          parseFloat(inputData.usage.totalCostUsd) + parseFloat(usageTotals.totalCostUsd)
+        ).toFixed(6),
       },
     };
   },

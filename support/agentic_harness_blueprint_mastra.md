@@ -74,7 +74,7 @@ You already use model tiers: **fast**, **standard**, **premium**. Keep that. Do 
 #### Local models
 
 - **qwen3:8b** — cheapest local utility model for scanning, summarization, and low-risk tasks
-- **qwen3\:coder-next****:Q4\_K\_M** — default local coding model for routine implementation and refactors
+- **qwen2.5-coder:32b** — default local coding model for routine implementation and refactors
 
 #### Cloud budget models
 
@@ -119,7 +119,7 @@ Use for:
 
 Good candidates:
 
-- qwen3\:coder-next\:Q4\_K\_M
+- qwen2.5-coder:32b
 - GPT-5.4 mini
 - Claude Haiku 4.5 when you want better judgment than the cheaper pool
 
@@ -154,12 +154,12 @@ Good candidates:
 ### Practical routing matrix
 
 - Repo discovery → qwen3:8b or GPT-4o mini
-- Simple UI tweak → qwen3\:coder-next or GPT-5.4 mini
-- New feature in one layer → qwen3\:coder-next or GPT-5.4 mini
-- Feature across UI + backend → Supervisor on Sonnet, workers on qwen3\:coder-next / GPT-5.4 mini
+- Simple UI tweak → qwen2.5-coder:32b or GPT-5.4 mini
+- New feature in one layer → qwen2.5-coder:32b or GPT-5.4 mini
+- Feature across UI + backend → Supervisor on Sonnet, workers on qwen2.5-coder:32b / GPT-5.4 mini
 - Auth / security / payments / RLS → Sonnet review mandatory, Opus optional for highest-risk work
-- Production incident triage → Supervisor on Sonnet, parallel diagnostics on GPT-5.4 mini / Haiku / qwen3\:coder-next
-- Large migration / refactor → Sonnet planning, qwen3\:coder-next / GPT-5.4 mini implementation, Sonnet review
+- Production incident triage → Supervisor on Sonnet, parallel diagnostics on GPT-5.4 mini / Haiku / qwen2.5-coder:32b
+- Large migration / refactor → Sonnet planning, qwen2.5-coder:32b / GPT-5.4 mini implementation, Sonnet review
 - Structured extraction / routing / log cleanup → GPT-4o mini
 
 ### Practical recommendation for your pool
@@ -355,7 +355,7 @@ Default model:
 - Claude Sonnet 4.5 Fallbacks:
 - GPT-5.4 mini for medium-complexity supervised runs when budget matters
 - Claude Opus 4.6 for hardest planning
-- qwen3\:coder-next for simpler scoped tasks
+- qwen2.5-coder:32b for simpler scoped tasks
 
 ### 2. RepoMapperAgent
 
@@ -370,7 +370,7 @@ Default model:
 
 - qwen3:8b Escalate to:
 - GPT-4o mini for better structured summaries
-- qwen3\:coder-next when code reasoning matters more
+- qwen2.5-coder:32b when code reasoning matters more
 
 ### 3. ImplementerAgent
 
@@ -382,7 +382,7 @@ Responsibilities:
 
 Default model:
 
-- qwen3\:coder-next\:Q4\_K\_M Escalate to:
+- qwen2.5-coder:32b Escalate to:
 - GPT-5.4 mini for harder bounded implementation
 - Claude Sonnet 4.5 for ambiguous refactors or tricky architecture-sensitive code
 
@@ -416,10 +416,10 @@ Default model:
 
 ### 6. Stack specialists
 
-- FrontendWebAgent → qwen3\:coder-next or GPT-5.4 mini; Sonnet 4.5 for harder interaction architecture
+- FrontendWebAgent → qwen2.5-coder:32b or GPT-5.4 mini; Sonnet 4.5 for harder interaction architecture
 - SupabaseAgent → GPT-5.4 mini by default; Sonnet 4.5 for RLS/auth/schema-sensitive work
 - RailwayAgent → GPT-4o mini or Haiku 4.5 for operational triage; Sonnet 4.5 for ambiguous infra issues
-- SwiftUIAgent → qwen3\:coder-next for implementation, GPT-5.4 mini for harder flows, Sonnet 4.5 for architectural issues
+- SwiftUIAgent → qwen2.5-coder:32b for implementation, GPT-5.4 mini for harder flows, Sonnet 4.5 for architectural issues
 - ApplePlatformAgent → GPT-5.4 mini or Sonnet 4.5 depending on signing/release risk
 - SecurityAgent → Sonnet 4.5 or Opus 4.6 only
 

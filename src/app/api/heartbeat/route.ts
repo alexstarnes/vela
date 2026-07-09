@@ -1,11 +1,13 @@
 /**
- * POST /api/heartbeat — Manual heartbeat trigger.
+ * POST /api/heartbeat — Manual heartbeat trigger (fire-and-forget).
  *
  * Query params:
  *   - taskId: run heartbeat for a specific task
  *   - agentId: run heartbeat for an agent (picks next open task)
  *
  * At least one of taskId or agentId must be provided.
+ * Returns immediately while the workflow runs in the background.
+ * Real-time progress is delivered via the SSE event stream.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -25,17 +27,18 @@ export async function POST(request: NextRequest) {
     }
 
     if (taskId) {
-      const result = await executeHeartbeatForTask(taskId);
-      return NextResponse.json(result, {
-        status: result.success ? 200 : 422,
+      // Fire-and-forget: run in the background so the API responds immediately.
+      executeHeartbeatForTask(taskId).catch((err) => {
+        console.error(`[api/heartbeat] Background task heartbeat failed for ${taskId}:`, err);
       });
+      return NextResponse.json({ success: true, started: true, taskId });
     }
 
     if (agentId) {
-      const result = await executeHeartbeat(agentId);
-      return NextResponse.json(result, {
-        status: result.success ? 200 : 422,
+      executeHeartbeat(agentId).catch((err) => {
+        console.error(`[api/heartbeat] Background agent heartbeat failed for ${agentId}:`, err);
       });
+      return NextResponse.json({ success: true, started: true, agentId });
     }
 
     return NextResponse.json({ error: 'Unreachable' }, { status: 500 });

@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Next.js Dev Server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "Mastra Studio",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:mastra"],
+      "port": 4111
+    },
+    {
+      "name": "Vela Helper",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:helper"],
+      "port": 4312
+    }
+  ]
+}

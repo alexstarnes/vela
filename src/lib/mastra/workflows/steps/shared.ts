@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { modeClassificationSchema } from '@/lib/orchestration/mode-classifier';
-import { verificationGateResultSchema } from '@/lib/mastra/tools/verification-tools';
+import { implementationAuditSchema } from '@/lib/orchestration/implementation-audit';
+import {
+  verificationFailureSchema,
+  verificationGateResultSchema,
+  verificationPolicySchema,
+} from '@/lib/mastra/tools/verification-tools';
 
 export const workflowIdSchema = z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow']);
 export const workflowKindSchema = z.enum(['feature', 'high_risk', 'debug']);
@@ -84,12 +89,17 @@ export const approvalCheckedWorkflowSchema = plannedWorkflowSchema.extend({
 export const implementedWorkflowSchema = approvalCheckedWorkflowSchema.extend({
   implementationSummary: z.string().default(''),
   implementerModel: z.string().nullable().optional(),
+  implementationAudit: implementationAuditSchema,
 });
 
 export const verifiedWorkflowSchema = implementedWorkflowSchema.extend({
   verification: z.object({
     status: z.enum(['pass', 'fail', 'skipped']),
+    policy: verificationPolicySchema,
     gateResults: z.array(verificationGateResultSchema),
+    verifiedFiles: z.array(z.string()),
+    blockingFailures: z.array(verificationFailureSchema),
+    informationalFailures: z.array(verificationFailureSchema),
     escalation: z
       .object({
         reason: z.string(),

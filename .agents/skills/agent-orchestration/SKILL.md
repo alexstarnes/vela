@@ -127,7 +127,7 @@ Four phases with clear entry/exit criteria. Agents activate and deactivate based
 
 Which models each agent can use at runtime. **default** = the model assigned at creation. The orchestrator switches to other allowed models based on task complexity, cost, or availability.
 
-| Agent | Opus 4.6 | Sonnet 4.5 | Composer 2 | Coder-Next (local) | Haiku 4.5 | Qwen3 8B (local) |
+| Agent | Opus 4.6 | Sonnet 4.5 | Composer 2 | Qwen2.5 Coder 32B (local) | Haiku 4.5 | Qwen3 8B (local) |
 |-------|:--------:|:----------:|:----------:|:-------------------:|:---------:|:-----------------:|
 | Orchestrator | **default** | | | | | |
 | Product Strategist | **default** | ✓ | | | | |
@@ -148,7 +148,7 @@ Which models each agent can use at runtime. **default** = the model assigned at 
 
 **Constraints:**
 - **Composer 2** — Coding-focused. Restricted to implementation and QA agents that primarily produce code.
-- **Qwen3-Coder-Next** — Local coding model. Same restrictions as Composer 2; use for zero-cost iteration loops.
+- **Qwen2.5-Coder 32B** — Local coding model (`qwen2.5-coder:32b`). Same restrictions as Composer 2; use for zero-cost iteration loops.
 - **Qwen3 8B** — Lightweight local model. Only for fast-tier mechanical tasks (docs, triage, formatting).
 - **Opus 4.6** — Reserve for tasks requiring deep reasoning, security, or architectural judgment.
 

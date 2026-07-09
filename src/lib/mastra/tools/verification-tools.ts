@@ -1,10 +1,17 @@
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { db } from '@/lib/db';
-import { projects } from '@/lib/db/schema';
+import { projects, type Task } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { readWorkspaceFile, runWorkspaceCommand } from '@/lib/helper/client';
 import type { ToolContext } from '../agent-factory';
+import {
+  buildVerificationPlan,
+  classifyVerificationFailures as classifyVerificationFailuresPure,
+  summarizeVerificationFailure,
+  type ChangedLineRanges,
+  type VerificationFailure,
+} from '@/lib/orchestration/verification-policy';
 
 export const verificationGateSchema = z.enum([
   'lint',
@@ -22,9 +29,16 @@ export const verificationGateResultSchema = z.object({
   stdout: z.string(),
   stderr: z.string(),
 });
+export const verificationPolicySchema = z.enum(['scoped', 'strict']);
+export const verificationFailureSchema = z.object({
+  gate: z.string(),
+  summary: z.string(),
+  files: z.array(z.string()),
+});
 
 export type VerificationGate = z.infer<typeof verificationGateSchema>;
 export type VerificationGateResult = z.infer<typeof verificationGateResultSchema>;
+export type VerificationPolicy = z.infer<typeof verificationPolicySchema>;
 
 export interface VerificationSequenceOptions {
   includeTests?: boolean;
@@ -69,6 +83,17 @@ async function runCommand(
   return runWorkspaceCommand({ workspacePath, command, args });
 }
 
+export function buildVerificationFailure(
+  result: VerificationGateResult,
+  files: string[],
+): VerificationFailure {
+  return {
+    gate: result.gate,
+    summary: summarizeVerificationFailure(result),
+    files,
+  };
+}
+
 function placeholderTestScript(script: string | undefined): boolean {
   return !script || script.includes('no test specified');
 }
@@ -99,6 +124,24 @@ async function runLint(projectId: string): Promise<VerificationGateResult> {
     gate: 'lint',
     status: result.exitCode === 0 ? 'passed' : 'failed',
     command: 'npm run lint',
+    ...result,
+  };
+}
+
+async function runScopedLint(
+  projectId: string,
+  files: string[],
+): Promise<VerificationGateResult> {
+  const scripts = await readPackageScripts(projectId);
+  if (!scripts.lint) {
+    return skippedGate('lint', 'npm run lint', 'No lint script defined in package.json');
+  }
+
+  const result = await runCommand(projectId, 'npm', ['run', 'lint', '--', ...files]);
+  return {
+    gate: 'lint',
+    status: result.exitCode === 0 ? 'passed' : 'failed',
+    command: `npm run lint -- ${files.join(' ')}`,
     ...result,
   };
 }
@@ -321,5 +364,108 @@ export async function runBroadVerificationSequence(
     includeTests: true,
     includeBuild: true,
     stopOnFailure: true,
+  });
+}
+
+/** Parse `git diff -U0` hunk headers (`@@ -a,b +c,d @@`) into new-file line ranges. */
+function parseDiffLineRanges(diffOutput: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  for (const match of diffOutput.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
+    const start = Number(match[1]);
+    const count = match[2] === undefined ? 1 : Number(match[2]);
+    if (count > 0) {
+      ranges.push([start, start + count - 1]);
+    } else {
+      // Pure deletion — the surrounding lines are still the change site.
+      ranges.push([Math.max(1, start), start + 1]);
+    }
+  }
+  return ranges;
+}
+
+/**
+ * Changed line ranges per file for the working tree. Untracked files count as
+ * fully changed.
+ */
+export async function getChangedLineRanges(
+  projectId: string,
+  files: string[],
+): Promise<ChangedLineRanges> {
+  const ranges: ChangedLineRanges = {};
+
+  for (const file of files) {
+    try {
+      const diff = await runCommand(projectId, 'git', ['diff', '-U0', '--', file]);
+      const parsed = parseDiffLineRanges(diff.stdout);
+      if (parsed.length > 0) {
+        ranges[file] = parsed;
+        continue;
+      }
+
+      const status = await runCommand(projectId, 'git', [
+        'status',
+        '--short',
+        '--',
+        file,
+      ]);
+      if (status.stdout.trim().startsWith('??')) {
+        ranges[file] = [[1, Number.MAX_SAFE_INTEGER]];
+      }
+    } catch {
+      // Leave the file without ranges; classification falls back to blocking.
+    }
+  }
+
+  return ranges;
+}
+
+export async function runScopedVerificationSequence(
+  ctx: ToolContext,
+  params: {
+    task: Pick<Task, 'title' | 'description'>;
+    changedFiles: string[];
+  },
+): Promise<{
+  gateResults: VerificationGateResult[];
+  verifiedFiles: string[];
+  changedLineRanges: ChangedLineRanges;
+}> {
+  const plan = buildVerificationPlan(params.task, params.changedFiles);
+  const scripts = await readPackageScripts(ctx.projectId);
+  const gateResults: VerificationGateResult[] = [];
+  const changedLineRanges = await getChangedLineRanges(ctx.projectId, plan.verifiedFiles);
+
+  if (plan.lintFiles.length > 0) {
+    const lintResult = await runScopedLint(ctx.projectId, plan.lintFiles);
+    gateResults.push(lintResult);
+  }
+
+  if (plan.needsTypecheck && scripts.typecheck) {
+    gateResults.push(await runTypecheck(ctx.projectId));
+  } else if (plan.needsBuild) {
+    gateResults.push(await runBuild(ctx.projectId));
+  }
+
+  return {
+    gateResults,
+    verifiedFiles: plan.verifiedFiles,
+    changedLineRanges,
+  };
+}
+
+export function classifyVerificationFailures(params: {
+  policy: VerificationPolicy;
+  gateResults: VerificationGateResult[];
+  verifiedFiles: string[];
+  changedLineRanges?: ChangedLineRanges;
+}): {
+  blockingFailures: VerificationFailure[];
+  informationalFailures: VerificationFailure[];
+} {
+  return classifyVerificationFailuresPure({
+    policy: params.policy,
+    gateResults: params.gateResults,
+    verifiedFiles: params.verifiedFiles,
+    changedLineRanges: params.changedLineRanges,
   });
 }

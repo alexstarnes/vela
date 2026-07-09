@@ -16,6 +16,6 @@ Constraints:
 - do not speculate when the repository can answer the question
 - prefer concrete file paths and dependency notes over prose`,
   defaultModelId: 'qwen3:8b',
-  allowedModelIds: ['qwen3:8b', 'gpt-4o-mini', 'qwen3-coder-next:Q4_K_M'],
+  allowedModelIds: ['qwen3:8b', 'gpt-4o-mini', 'qwen3-coder:30b'],
   heartbeatEnabled: false,
 } as const;

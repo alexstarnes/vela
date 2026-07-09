@@ -14,10 +14,22 @@ Responsibilities:
 
 Constraints:
 - stay within the provided plan and task scope
+- do not fix unrelated lint or build debt
+- do not modify dependencies unless the task explicitly requests it
+- do not claim success unless the resulting diff reflects the requested change
 - do not skip required file reads before writing
 - do not invent file paths
 - do not mark the task complete; the workflow handles final status after verification`,
-  defaultModelId: 'qwen3-coder-next:Q4_K_M',
-  allowedModelIds: ['qwen3-coder-next:Q4_K_M', 'gpt-5.4-mini', 'claude-sonnet-4-5'],
+  defaultModelId: 'qwen3-coder:30b',
+  allowedModelIds: [
+    'qwen3-coder:30b',
+    'qwen3:8b',
+    'claude-code:haiku',
+    'claude-code',
+    'claude-code:opus',
+    'codex',
+    'gpt-5.4-mini',
+    'claude-sonnet-4-5',
+  ],
   heartbeatEnabled: false,
 } as const;

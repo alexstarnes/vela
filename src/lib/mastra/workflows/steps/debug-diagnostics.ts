@@ -4,6 +4,7 @@ import { tasks } from '@/lib/db/schema';
 import { createMastraAgent } from '@/lib/mastra/agent-factory';
 import { getRuntimeAgentRow } from '@/lib/mastra/agents/runtime-agent-db';
 import { estimateCostUsd, getModelCostRates } from '@/lib/mastra/costs';
+import { isRouterModelAvailable } from '@/lib/mastra/router';
 import { logTaskEvent } from '@/lib/events/logger';
 import { eq } from 'drizzle-orm';
 import { debugDiagnosedTaskSchema, debugHypothesesTaskSchema } from './shared';
@@ -40,10 +41,11 @@ export const diagnoseDebugTaskStep = createStep({
       throw new Error('Runtime Repo Mapper agent not found');
     }
 
+    const preferredModel = 'openai/gpt-4o-mini';
     const { agent, provider, resolvedModelId } = await createMastraAgent(
       repoMapper,
       task,
-      'openai/gpt-4o-mini',
+      (await isRouterModelAvailable(preferredModel)) ? preferredModel : undefined,
     );
     const response = await agent.generate(
       `Investigate the repository for this bug and summarize evidence against the current hypotheses.

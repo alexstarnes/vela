@@ -104,6 +104,26 @@ export async function spendBudget(
 }
 
 /**
+ * Lazily apply the monthly budget reset: when budget_reset_at has passed,
+ * zero the spend, advance the marker one month, and reactivate an agent that
+ * was paused for budget. Atomic single UPDATE; a stale marker several months
+ * old simply resets again on subsequent heartbeats until it catches up.
+ */
+export async function applyBudgetResetIfDue(agentId: string): Promise<void> {
+  await db
+    .update(agents)
+    .set({
+      budgetUsedUsd: '0',
+      budgetResetAt: sql`${agents.budgetResetAt} + interval '1 month'`,
+      status: sql`CASE WHEN ${agents.status} = 'budget_exceeded' THEN 'active' ELSE ${agents.status} END`,
+      updatedAt: new Date(),
+    })
+    .where(
+      sql`${agents.id} = ${agentId} AND ${agents.budgetResetAt} IS NOT NULL AND ${agents.budgetResetAt} <= now()`,
+    );
+}
+
+/**
  * Check current budget state without spending.
  * Used at heartbeat start to determine whether to proceed.
  */
@@ -111,6 +131,8 @@ export async function checkBudgetPrecondition(agentId: string): Promise<{
   canProceed: boolean;
   reason?: string;
 }> {
+  await applyBudgetResetIfDue(agentId);
+
   const rows = await db.query.agents.findFirst({
     where: eq(agents.id, agentId),
   });

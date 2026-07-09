@@ -92,7 +92,7 @@ Use for: normal feature work, bounded debugging, moderate cross-file edits, impl
 
 | Model | Type | Notes |
 |-------|------|-------|
-| qwen3:coder-next:Q4_K_M | Local | Default local coding model. Zero-cost iteration loops. |
+| qwen2.5-coder:32b | Local | Default local coding model. Zero-cost iteration loops. |
 | GPT-5.4 mini | Cloud | Default cloud coding/subagent model. Use before Sonnet. |
 | Claude Haiku 4.5 | Cloud | Tier-2 ceiling. Better judgment than mini models, cheaper than Sonnet. |
 
@@ -132,12 +132,12 @@ Implementation: persist `failure_count` per task. On each failed verification ga
 | Task | Model |
 |------|-------|
 | Repo discovery, file tree | qwen3:8b or GPT-4o mini |
-| Simple UI tweak | qwen3:coder-next or GPT-5.4 mini |
-| New feature (one layer) | qwen3:coder-next or GPT-5.4 mini |
-| Feature (UI + backend) | Supervisor on Sonnet, workers on coder-next / GPT-5.4 mini |
+| Simple UI tweak | qwen2.5-coder:32b or GPT-5.4 mini |
+| New feature (one layer) | qwen2.5-coder:32b or GPT-5.4 mini |
+| Feature (UI + backend) | Supervisor on Sonnet, workers on qwen2.5-coder:32b / GPT-5.4 mini |
 | Auth / security / payments / RLS | Sonnet review mandatory, Opus for highest-risk |
 | Production incident triage | Supervisor on Sonnet, parallel diagnostics on GPT-5.4 mini / Haiku |
-| Large migration / refactor | Sonnet planning, coder-next / GPT-5.4 mini implementation, Sonnet review |
+| Large migration / refactor | Sonnet planning, qwen2.5-coder:32b / GPT-5.4 mini implementation, Sonnet review |
 | Structured extraction / routing / log cleanup | GPT-4o mini |
 
 ---
@@ -151,8 +151,8 @@ These are the agents that actually run as Mastra agent instances during task exe
 | Agent | Role | Default Tier | Escalates To |
 |-------|------|-------------|--------------|
 | **Supervisor** | Classify, plan, route, synthesize | Tier-1 (Sonnet) or Tier-2 (GPT-5.4 mini / Haiku) | Opus for hardest planning |
-| **Repo Mapper** | Read repo, find files, trace deps, build implementation map | Tier-3 (qwen3:8b) | GPT-4o mini, coder-next |
-| **Implementer** | Write/edit code within the plan | Tier-2 (coder-next) | GPT-5.4 mini, Sonnet for ambiguous work |
+| **Repo Mapper** | Read repo, find files, trace deps, build implementation map | Tier-3 (qwen3:8b) | GPT-4o mini, qwen2.5-coder:32b |
+| **Implementer** | Write/edit code within the plan | Tier-2 (qwen2.5-coder:32b) | GPT-5.4 mini, Sonnet for ambiguous work |
 | **Reviewer** | Inspect diffs, detect edge cases, confirm plan adherence | Tier-2 (GPT-5.4 mini) | Sonnet, Opus for architecture/security |
 | **Verifier** | Run lint, typecheck, tests, build. Report failures as structured data. | Tier-3 (qwen3:8b) | GPT-4o mini for tricky failure diagnosis |
 
@@ -498,6 +498,15 @@ Human provides guidance → Supervisor re-routes with new context
 - [ ] Eval datasets for routing quality
 - [ ] Routing scorecards (track tier usage, escalation frequency, cost per task)
 - [ ] Automatic model escalation tuning based on failure patterns
+
+## Runtime Hardening (June 2026)
+
+- **Whitespace-tolerant apply_diff** — the helper retries searchText matching ignoring indentation and reports the closest near-miss region when no match is found.
+- **No-edit retry with deterministic context** — if the implementer finishes without editing any file, the workflow retries once with an edit-only directive; the harness pre-locates the exact target regions and embeds verbatim file snippets so the first tool call can be apply_diff.
+- **Changed-line-scoped lint gate** — scoped verification only blocks on lint errors that intersect the lines actually changed (parsed from git diff -U0); pre-existing lint debt elsewhere is reported as informational.
+- **Model presence health checks** — Ollama routing verifies the exact model is installed via /api/tags, not just that the endpoint is reachable.
+- **Availability-gated overrides** — hardcoded per-step cloud model overrides are honored only when the model is marked available in model_configs; otherwise the configured agent model is used.
+- **Tier-aware cloud fallback with accurate logging** — local failures fall back to the cheapest cloud model for the task tier, and model_fallback events record the actually selected model.
 
 ---
 

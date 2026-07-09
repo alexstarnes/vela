@@ -14,7 +14,8 @@ import { db } from '@/lib/db';
 import { skills, projects, taskEvents } from '@/lib/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import type { Agent as DbAgent, Task } from '@/lib/db/schema';
-import { resolveModel } from './router';
+import { FALLBACK_MODEL, resolveModel } from './router';
+import type { ExecutionTier } from '@/lib/orchestration/model-selection';
 import { playbookMarkdownWithoutCorePrompt } from '@/lib/agent-orchestration/reference-docs';
 import { getRuntimeAgentDefinition } from './agents';
 import {
@@ -22,6 +23,7 @@ import {
   injectReviewerTemplates,
 } from '@/lib/orchestration/template-injector';
 import { loadRepoGuidanceMarkdown } from '@/lib/orchestration/playbook-loader';
+import { getTaskExecutionPolicy } from '@/lib/orchestration/task-shape';
 
 import { createCreateSubtaskTool, createUpdateTaskStatusTool, createAddMessageTool, createListAgentsTool } from './tools/task-tools';
 import { createGetProjectContextTool, createListTasksTool } from './tools/project-tools';
@@ -33,8 +35,10 @@ import {
   createGitStatusTool,
   createListWorkspaceFilesTool,
   createReadWorkspaceFileTool,
+  createSearchWorkspaceTool,
   createRunWorkspaceCommandTool,
   createWriteWorkspaceFileTool,
+  createApplyDiffTool,
 } from './tools/workspace-tools';
 import { createCreatePullRequestTool } from './tools/github-tools';
 import {
@@ -54,6 +58,10 @@ export interface ToolContext {
   projectId: string;
 }
 
+function truncateSection(text: string, limit: number): string {
+  return text.length > limit ? `${text.slice(0, limit)}\n... (truncated)` : text;
+}
+
 /**
  * Build the system prompt for an agent given its config, task, and project.
  */
@@ -62,6 +70,8 @@ async function buildSystemPrompt(
   task: Task,
 ): Promise<string> {
   const parts: string[] = [];
+  const executionPolicy = getTaskExecutionPolicy(task);
+  const compactPrompt = executionPolicy.compactPrompt;
   const runtimeDefinition = dbAgent.agentKind === 'runtime'
     ? getRuntimeAgentDefinition(dbAgent.name)
     : null;
@@ -79,7 +89,7 @@ async function buildSystemPrompt(
 
   // Full orchestration reference (capabilities, phases, anti-patterns, collaboration) from repo
   const playbookName = dbAgent.name === 'Supervisor' ? 'Orchestrator' : dbAgent.name;
-  const playbook = playbookMarkdownWithoutCorePrompt(playbookName);
+  const playbook = compactPrompt ? null : playbookMarkdownWithoutCorePrompt(playbookName);
   if (playbook) {
     parts.push(
       '\n## Role playbook (from agent-orchestration skill reference)\n\nThe following expands your role beyond the core instructions above: capabilities, model tier, phases, examples, anti-patterns, and handoff rules.\n',
@@ -87,13 +97,13 @@ async function buildSystemPrompt(
     parts.push(playbook);
   }
 
-  if (dbAgent.name === 'Implementer') {
+  if (!compactPrompt && dbAgent.name === 'Implementer') {
     const templates = injectImplementationTemplates(task);
     if (templates.length > 0) {
       parts.push('\n## Specialist Templates\n');
       parts.push(...templates);
     }
-  } else if (dbAgent.name === 'Reviewer') {
+  } else if (!compactPrompt && dbAgent.name === 'Reviewer') {
     const templates = injectReviewerTemplates(task);
     if (templates.length > 0) {
       parts.push('\n## Review Templates\n');
@@ -104,7 +114,11 @@ async function buildSystemPrompt(
   const repoGuidance = loadRepoGuidanceMarkdown(task);
   if (repoGuidance.length > 0) {
     parts.push('\n## Repo Guidance\n');
-    parts.push(...repoGuidance);
+    parts.push(
+      ...(compactPrompt
+        ? repoGuidance.slice(-1).map((entry) => truncateSection(entry, 1200))
+        : repoGuidance),
+    );
   }
 
   // Project context
@@ -137,22 +151,22 @@ async function buildSystemPrompt(
     }
 
     // Skills (global + project-scoped)
-    const projectSkills = await db.query.skills.findMany({
-      where: eq(skills.projectId, task.projectId),
-    });
-    const globalSkills = await db.query.skills.findMany({
-      where: eq(skills.scope, 'global'),
-    });
-    const allSkills = [...globalSkills, ...projectSkills];
+    const allSkills = compactPrompt
+      ? []
+      : [
+          ...(await db.query.skills.findMany({
+            where: eq(skills.scope, 'global'),
+          })),
+          ...(await db.query.skills.findMany({
+            where: eq(skills.projectId, task.projectId),
+          })),
+        ];
     if (allSkills.length > 0) {
       parts.push('\n## Relevant Skills');
       for (const skill of allSkills) {
         parts.push(`### ${skill.name} (${skill.scope})`);
         if (skill.contentMd) {
-          const content = skill.contentMd.length > 2000
-            ? skill.contentMd.slice(0, 2000) + '\n... (truncated)'
-            : skill.contentMd;
-          parts.push(content);
+          parts.push(truncateSection(skill.contentMd, 1400));
         }
       }
     }
@@ -170,7 +184,7 @@ async function buildSystemPrompt(
   const recentEvents = await db.query.taskEvents.findMany({
     where: eq(taskEvents.taskId, task.id),
     orderBy: [desc(taskEvents.createdAt)],
-    limit: 5,
+    limit: compactPrompt ? 3 : 5,
   });
 
   if (recentEvents.length > 0) {
@@ -178,7 +192,7 @@ async function buildSystemPrompt(
     for (const evt of recentEvents) {
       const payload = evt.payload as Record<string, unknown> | null;
       const summary = payload
-        ? JSON.stringify(payload).slice(0, 200)
+        ? JSON.stringify(payload).slice(0, compactPrompt ? 120 : 200)
         : '';
       parts.push(`- [${evt.eventType}] ${summary}`);
     }
@@ -195,17 +209,23 @@ async function buildSystemPrompt(
     );
     parts.push(
       'Workflow requirements:\n' +
-      '1) Use list_workspace_files to discover the project structure before reading or writing.\n' +
+      '1) Use search_workspace with exact task terms first. Use list_workspace_files only for narrow follow-up inspection.\n' +
       '2) Read files before writing them.\n' +
-      '3) Write complete file contents when using write_workspace_file.\n' +
+      '3) For small, focused edits, prefer apply_diff (search-and-replace) over write_workspace_file. Use write_workspace_file only for new files or complete rewrites.\n' +
       '4) Use focused workspace commands to validate your changes while implementing.\n' +
       '5) Do not transition the task status; verification and final status changes happen after your step.',
     );
     parts.push(
       'CRITICAL RULES:\n' +
+      '- Stay within the provided task scope. Do not fix unrelated lint, build, or cleanup debt.\n' +
+      '- Do not modify dependencies or lockfiles unless the task is explicitly about tooling or dependencies.\n' +
+      '- Do not claim a code change unless the resulting git diff shows it.\n' +
+      '- If the exact target cannot be located in the repo, stop and report target-not-found. Do not edit a nearby component as a fallback.\n' +
+      '- Do not create placeholder markup, comments, or stub UI to simulate the requested change.\n' +
       '- NEVER write placeholder code like "// Existing code..." — always write the full, real file contents.\n' +
-      '- NEVER guess file paths — always use list_workspace_files first.\n' +
-      '- NEVER repeat the same failing tool call without changing approach.',
+      '- NEVER guess file paths — use search_workspace and then read the real file before writing.\n' +
+      '- NEVER repeat the same failing tool call without changing approach.\n' +
+      '- Prefer apply_diff for targeted changes. Only use write_workspace_file for new files or when the majority of the file changes.',
     );
   } else if (dbAgent.name === 'Verifier') {
     parts.push(
@@ -259,6 +279,7 @@ export async function createMastraAgent(
   dbAgent: DbAgent,
   task: Task,
   modelOverride?: string,
+  stepTierFloor?: ExecutionTier,
 ): Promise<MastraAgentResult> {
   // Resolve the model (or use the override if provided, e.g. during fallback)
   const resolved = modelOverride
@@ -266,11 +287,13 @@ export async function createMastraAgent(
         modelId: modelOverride,
         isFallback: true,
         provider: (modelOverride.split('/')[0] || 'anthropic') as 'anthropic' | 'openai' | 'ollama',
+        resolvedModelId: modelOverride,
       }
     : await resolveModel(
         dbAgent.modelConfigId,
         task.id,
         dbAgent.id,
+        stepTierFloor,
       );
 
   // Build the system prompt
@@ -308,6 +331,7 @@ export async function createMastraAgent(
 
   const supervisorTools = {
     ...commonTools,
+    search_workspace: createSearchWorkspaceTool(ctx),
     list_workspace_files: createListWorkspaceFilesTool(ctx),
     read_workspace_file: createReadWorkspaceFileTool(ctx),
     run_workspace_command: createRunWorkspaceCommandTool(ctx),
@@ -317,9 +341,11 @@ export async function createMastraAgent(
 
   const runtimeImplementerTools = {
     ...commonTools,
+    search_workspace: createSearchWorkspaceTool(ctx),
     list_workspace_files: createListWorkspaceFilesTool(ctx),
     read_workspace_file: createReadWorkspaceFileTool(ctx),
     write_workspace_file: createWriteWorkspaceFileTool(ctx),
+    apply_diff: createApplyDiffTool(ctx),
     run_workspace_command: createRunWorkspaceCommandTool(ctx),
     git_status: createGitStatusTool(ctx),
     git_diff: createGitDiffTool(ctx),
@@ -327,14 +353,11 @@ export async function createMastraAgent(
     git_commit: createGitCommitTool(ctx),
     git_push: createGitPushTool(ctx),
     create_pull_request: createCreatePullRequestTool(ctx),
-    run_lint: createRunLintTool(ctx),
-    run_typecheck: createRunTypecheckTool(ctx),
-    run_tests: createRunTestsTool(ctx),
-    run_build: createRunBuildTool(ctx),
   };
 
   const repoMapperTools = {
     ...commonTools,
+    search_workspace: createSearchWorkspaceTool(ctx),
     list_workspace_files: createListWorkspaceFilesTool(ctx),
     read_workspace_file: createReadWorkspaceFileTool(ctx),
     run_workspace_command: createRunWorkspaceCommandTool(ctx),
@@ -344,6 +367,7 @@ export async function createMastraAgent(
 
   const reviewerTools = {
     ...commonTools,
+    search_workspace: createSearchWorkspaceTool(ctx),
     list_workspace_files: createListWorkspaceFilesTool(ctx),
     read_workspace_file: createReadWorkspaceFileTool(ctx),
     run_workspace_command: createRunWorkspaceCommandTool(ctx),
@@ -368,9 +392,11 @@ export async function createMastraAgent(
   const legacyImplementationTools = {
     ...legacyCommonTools,
     create_subtask: createCreateSubtaskTool(ctx),
+    search_workspace: createSearchWorkspaceTool(ctx),
     list_workspace_files: createListWorkspaceFilesTool(ctx),
     read_workspace_file: createReadWorkspaceFileTool(ctx),
     write_workspace_file: createWriteWorkspaceFileTool(ctx),
+    apply_diff: createApplyDiffTool(ctx),
     run_workspace_command: createRunWorkspaceCommandTool(ctx),
     git_status: createGitStatusTool(ctx),
     git_diff: createGitDiffTool(ctx),
@@ -395,12 +421,15 @@ export async function createMastraAgent(
                 ? legacyOrchestratorTools
                 : legacyImplementationTools;
 
-  // Create the Mastra Agent
+  // Create the Mastra Agent. CLI-lane selections are execution backends, not
+  // token-level models — callers must branch on provider === 'cli' before
+  // calling agent.generate. The placeholder model keeps the Agent valid if a
+  // caller generates anyway (it would silently run on the API fallback).
   const agent = new Agent({
     id: `vela-agent-${dbAgent.id}`,
     name: dbAgent.name,
     instructions,
-    model: resolved.modelId,
+    model: resolved.provider === 'cli' ? FALLBACK_MODEL : resolved.modelId,
     tools,
   });
 
@@ -408,6 +437,6 @@ export async function createMastraAgent(
     agent,
     provider: resolved.provider,
     isFallback: resolved.isFallback,
-    resolvedModelId: typeof resolved.modelId === 'string' ? resolved.modelId : 'ollama/local',
+    resolvedModelId: resolved.resolvedModelId,
   };
 }

@@ -6,11 +6,23 @@ import { db } from '@/lib/db';
 import { heartbeats } from '@/lib/db/schema';
 import { desc } from 'drizzle-orm';
 import { RunNowButton } from './run-now-button';
+import { CronExpressionParser } from 'cron-parser';
 
 function parseCronNext(cron: string | null): string {
   if (!cron) return '—';
-  // Simple human hint — in production, use a cron parser library
-  return 'Scheduled';
+  try {
+    const next = CronExpressionParser.parse(cron).next().toDate();
+    const deltaMs = next.getTime() - Date.now();
+    const relative =
+      deltaMs < 60_000
+        ? '<1m'
+        : deltaMs < 3_600_000
+          ? `${Math.round(deltaMs / 60_000)}m`
+          : `${Math.round(deltaMs / 3_600_000)}h`;
+    return `${next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (in ${relative})`;
+  } catch {
+    return 'Invalid cron';
+  }
 }
 
 function formatTime(date: Date | null | undefined): string {

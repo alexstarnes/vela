@@ -45,15 +45,23 @@ async function callHelper<T>(
   method: HelperMethod,
   payload?: unknown,
 ): Promise<T> {
-  const response = await fetch(`${getHelperBaseUrl()}${pathname}`, {
-    method,
-    cache: 'no-store',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Vela-Helper-Secret': getHelperSecret(),
-    },
-    body: payload === undefined ? undefined : JSON.stringify(payload),
-  });
+  const baseUrl = getHelperBaseUrl();
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${pathname}`, {
+      method,
+      cache: 'no-store',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Vela-Helper-Secret': getHelperSecret(),
+      },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error(
+      `Vela helper is unreachable at ${baseUrl} (${pathname}). Start it with \`npm run dev:helper\` — workspace file operations cannot run without it.`,
+    );
+  }
 
   const body = (await response.json().catch(() => null)) as HelperResponse<T> | null;
 
@@ -116,6 +124,15 @@ export async function writeWorkspaceFile(params: {
   return callHelper<{ saved: boolean }>('/workspace/write-file', 'POST', params);
 }
 
+export async function applyWorkspaceDiff(params: {
+  workspacePath: string;
+  relativePath: string;
+  searchText: string;
+  replaceText: string;
+}): Promise<{ applied: boolean; message?: string }> {
+  return callHelper<{ applied: boolean; message?: string }>('/workspace/apply-diff', 'POST', params);
+}
+
 export async function runWorkspaceCommand(params: {
   workspacePath: string;
   command: string;
@@ -171,4 +188,140 @@ export async function gitPush(params: {
   authToken?: string;
 }): Promise<{ stdout: string }> {
   return callHelper<{ stdout: string }>('/workspace/git-push', 'POST', params);
+}
+
+// ─── Dev server control ────────────────────────────────────────────
+
+export interface DevServerStatus {
+  running: boolean;
+  pid: number | null;
+  port: number | null;
+  startedAt: string | null;
+  exitCode: number | null;
+  recentOutput: string[];
+}
+
+export async function startWorkspaceDevServer(params: {
+  workspacePath: string;
+  script?: string;
+}): Promise<DevServerStatus> {
+  return callHelper<DevServerStatus>('/dev-server/start', 'POST', params);
+}
+
+export async function stopWorkspaceDevServer(params: {
+  workspacePath: string;
+}): Promise<{ stopped: boolean; wasRunning: boolean }> {
+  return callHelper<{ stopped: boolean; wasRunning: boolean }>('/dev-server/stop', 'POST', params);
+}
+
+export async function getWorkspaceDevServerStatus(params: {
+  workspacePath: string;
+}): Promise<DevServerStatus> {
+  return callHelper<DevServerStatus>('/dev-server/status', 'POST', params);
+}
+
+// ─── CLI execution lane ────────────────────────────────────────────
+
+export type CliName = 'claude' | 'codex';
+
+export interface CliHealthResult {
+  cli: CliName;
+  available: boolean;
+  version: string | null;
+  error: string | null;
+}
+
+export interface CliExecuteResult {
+  ok: boolean;
+  errorKind: 'usage_limit' | 'auth' | 'timeout' | 'error' | null;
+  resultText: string;
+  rawOutput: string;
+  exitCode: number;
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null;
+  reportedCostUsd: number | null;
+  numTurns: number | null;
+  durationMs: number | null;
+}
+
+export const CLI_EXECUTE_DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;
+
+export async function checkCliLaneHealth(cli: CliName): Promise<CliHealthResult> {
+  try {
+    return await callHelper<CliHealthResult>('/cli/health', 'POST', { cli });
+  } catch (error) {
+    return {
+      cli,
+      available: false,
+      version: null,
+      error: error instanceof Error ? error.message : 'Helper unreachable',
+    };
+  }
+}
+
+/**
+ * Run a headless coding CLI in a workspace via the helper. Uses node:http
+ * directly (not fetch) because CLI executions can outlive undici's default
+ * 5-minute header timeout.
+ */
+export async function executeCliTask(params: {
+  workspacePath: string;
+  cli: CliName;
+  prompt: string;
+  model?: string;
+  timeoutMs?: number;
+  maxTurns?: number;
+}): Promise<CliExecuteResult> {
+  const { request } = await import('node:http');
+  const timeoutMs = params.timeoutMs ?? CLI_EXECUTE_DEFAULT_TIMEOUT_MS;
+  const baseUrl = new URL(getHelperBaseUrl());
+  const payload = JSON.stringify({ ...params, timeoutMs });
+
+  return new Promise<CliExecuteResult>((resolve, reject) => {
+    const req = request(
+      {
+        hostname: baseUrl.hostname,
+        port: baseUrl.port || 80,
+        path: '/cli/execute',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          'X-Vela-Helper-Secret': getHelperSecret(),
+        },
+        // Helper enforces its own process timeout; give it headroom to respond.
+        timeout: timeoutMs + 30_000,
+      },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(body) as HelperResponse<CliExecuteResult>;
+            if (!parsed.ok || !parsed.data) {
+              reject(new Error(parsed.error || 'CLI execution failed in helper'));
+              return;
+            }
+            resolve(parsed.data);
+          } catch {
+            reject(new Error(`Helper returned invalid response for /cli/execute: ${body.slice(0, 200)}`));
+          }
+        });
+      },
+    );
+
+    req.on('timeout', () => {
+      req.destroy(new Error('CLI execution request timed out waiting for the helper'));
+    });
+    req.on('error', (error) => {
+      reject(
+        new Error(
+          `Vela helper is unreachable at ${baseUrl.origin} (/cli/execute): ${error.message}. Start it with \`npm run dev:helper\`.`,
+        ),
+      );
+    });
+    req.write(payload);
+    req.end();
+  });
 }

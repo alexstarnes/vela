@@ -39,9 +39,9 @@ const defaultModels = [
     isAvailable: true,
   },
   {
-    name: 'Qwen3-Coder-Next (Local)',
+    name: 'Qwen3-Coder 30B (Local)',
     provider: 'ollama',
-    modelId: 'qwen3-coder-next:Q4_K_M',
+    modelId: 'qwen3-coder:30b',
     tier: 'standard',
     isLocal: true,
     endpointUrl: null,
@@ -99,6 +99,59 @@ const defaultModels = [
     maxContextTokens: 128000,
     isAvailable: true,
   },
+  // CLI execution lane — implementation work runs headless through a coding
+  // CLI (Claude Code / Codex) under subscription auth on the helper machine.
+  // Zero metered cost; requires the vela-helper bridge and a logged-in CLI.
+  // The suffix after ':' is passed to the CLI as --model, so the lane honors
+  // the same fast/standard/premium tier routing as API models.
+  {
+    name: 'Claude Code CLI (Haiku)',
+    provider: 'cli',
+    modelId: 'claude-code:haiku',
+    tier: 'fast',
+    isLocal: false,
+    endpointUrl: null,
+    inputCostPer1m: '0.0000',
+    outputCostPer1m: '0.0000',
+    maxContextTokens: 200000,
+    isAvailable: true,
+  },
+  {
+    name: 'Claude Code CLI (subscription)',
+    provider: 'cli',
+    modelId: 'claude-code',
+    tier: 'standard',
+    isLocal: false,
+    endpointUrl: null,
+    inputCostPer1m: '0.0000',
+    outputCostPer1m: '0.0000',
+    maxContextTokens: 200000,
+    isAvailable: true,
+  },
+  {
+    name: 'Claude Code CLI (Opus)',
+    provider: 'cli',
+    modelId: 'claude-code:opus',
+    tier: 'premium',
+    isLocal: false,
+    endpointUrl: null,
+    inputCostPer1m: '0.0000',
+    outputCostPer1m: '0.0000',
+    maxContextTokens: 200000,
+    isAvailable: true,
+  },
+  {
+    name: 'Codex CLI (subscription)',
+    provider: 'cli',
+    modelId: 'codex',
+    tier: 'standard',
+    isLocal: false,
+    endpointUrl: null,
+    inputCostPer1m: '0.0000',
+    outputCostPer1m: '0.0000',
+    maxContextTokens: 200000,
+    isAvailable: true,
+  },
 ];
 
 // ─── Legacy reference agents ─────────────────────────────────────
@@ -150,21 +203,21 @@ const legacyReferenceAgents: {
     role: 'Implements UI components, client state, accessibility, and client-side performance from UX specs and API contracts.',
     domain: 'implementation',
     defaultModelId: 'claude-sonnet-4-5',
-    allowedModelIds: ['claude-sonnet-4-5', 'qwen3-coder-next:Q4_K_M'],
+    allowedModelIds: ['claude-sonnet-4-5', 'qwen3-coder:30b'],
   },
   {
     name: 'Backend Engineer',
     role: 'Implements APIs, business logic, data access, auth integration, and external integrations with validation and structured errors.',
     domain: 'implementation',
     defaultModelId: 'claude-sonnet-4-5',
-    allowedModelIds: ['claude-sonnet-4-5', 'qwen3-coder-next:Q4_K_M'],
+    allowedModelIds: ['claude-sonnet-4-5', 'qwen3-coder:30b'],
   },
   {
     name: 'Fullstack Implementer',
     role: 'Delivers end-to-end vertical slices spanning schema, API, UI, and tests when splitting FE/BE would add needless coordination.',
     domain: 'implementation',
     defaultModelId: 'claude-sonnet-4-5',
-    allowedModelIds: ['claude-sonnet-4-5', 'qwen3-coder-next:Q4_K_M'],
+    allowedModelIds: ['claude-sonnet-4-5', 'qwen3-coder:30b'],
   },
   {
     name: 'AI/Agent Engineer',

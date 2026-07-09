@@ -37,6 +37,15 @@ const EVENT_ICONS: Record<string, { icon: string; color: string }> = {
   approval_request: { icon: '?', color: '#C27D1A' },
   approval_response: { icon: '✓', color: '#3D8B5C' },
   model_fallback: { icon: '⤵', color: '#4A7AB5' },
+  verification: { icon: '⛨', color: '#3D8B5C' },
+  review: { icon: '☰', color: '#7C3AED' },
+  implementation_audit: { icon: '±', color: '#4A7AB5' },
+  workflow_route: { icon: '⇶', color: '#7C3AED' },
+  mode_selection: { icon: '◉', color: '#6B665A' },
+  repo_map: { icon: '▤', color: '#6B665A' },
+  model_escalation: { icon: '↑', color: '#C27D1A' },
+  routing_tuning: { icon: '≋', color: '#6B665A' },
+  scorecard: { icon: '∑', color: '#6B665A' },
 };
 
 export default async function TaskDetailPage({
@@ -179,7 +188,38 @@ export default async function TaskDetailPage({
                   } else if (event.eventType === 'budget_exceeded' && payload) {
                     content = `Budget exceeded — $${parseFloat(String(payload.used_usd ?? '0')).toFixed(4)} / $${parseFloat(String(payload.limit_usd ?? '0')).toFixed(2)}. Agent paused.`;
                   } else if (event.eventType === 'model_fallback' && payload) {
-                    content = `Ollama offline — falling back to ${payload.fallback_model ?? 'cloud model'}. Configured: ${payload.configured_model ?? 'unknown'}`;
+                    content = String(
+                      payload.reason ??
+                        `Falling back to ${payload.fallback_model ?? 'cloud model'} (configured: ${payload.configured_model ?? 'unknown'})`,
+                    );
+                  } else if (event.eventType === 'verification' && payload) {
+                    const gates = Array.isArray(payload.gate_results)
+                      ? (payload.gate_results as Array<{ gate: string; status: string }>)
+                      : [];
+                    const blocking = Array.isArray(payload.blocking_failures)
+                      ? payload.blocking_failures.length
+                      : 0;
+                    const informational = Array.isArray(payload.informational_failures)
+                      ? payload.informational_failures.length
+                      : 0;
+                    content = `Verification ${payload.status === 'pass' ? 'PASSED' : payload.status === 'fail' ? 'FAILED' : 'skipped'} (${payload.policy} policy) — ${gates.map((g) => `${g.gate}: ${g.status}`).join(', ') || 'no gates run'}${blocking > 0 ? ` · ${blocking} blocking failure(s)` : ''}${informational > 0 ? ` · ${informational} informational (pre-existing, out of scope)` : ''}`;
+                  } else if (event.eventType === 'review' && payload) {
+                    content = `Reviewer ${payload.status === 'pass' ? 'PASSED' : 'requested rework'} — ${String(payload.findings ?? '').slice(0, 400)}`;
+                  } else if (event.eventType === 'implementation_audit' && payload) {
+                    const files = Array.isArray(payload.changedFiles) ? payload.changedFiles : [];
+                    content = `${String(payload.diffSummary ?? '')} Files: ${files.join(', ') || 'none'}`;
+                  } else if (event.eventType === 'workflow_route' && payload) {
+                    content = `Routed to ${payload.workflow_id ?? 'workflow'}`;
+                  } else if (event.eventType === 'mode_selection' && payload) {
+                    content = `Mode ${payload.mode} (score ${payload.score}/8) · effective tier ${payload.effective_tier}`;
+                  } else if (event.eventType === 'model_escalation' && payload) {
+                    content = `Escalated tier ${payload.from_tier} → ${payload.to_tier} after ${payload.failure_count} failure(s)`;
+                  } else if (event.eventType === 'repo_map' && payload) {
+                    content = String(payload.summary ?? '');
+                  } else if (event.eventType === 'scorecard' && payload) {
+                    content = `${payload.workflow_id ?? ''} · tier ${payload.tier ?? '?'} · $${Number(payload.totalCostUsd ?? 0).toFixed(4)} · ${payload.verificationFailures ?? 0} verification failure(s) · ${payload.escalationCount ?? 0} escalation(s)`;
+                  } else if (event.eventType === 'model_call' && payload && payload.selected_model) {
+                    content = `Routed to ${payload.selected_model}${payload.selection_kind ? ` (${String(payload.selection_kind).replace(/_/g, ' ')})` : ''}`;
                   } else if (event.eventType === 'approval_request' && payload) {
                     content = String(payload.description ?? 'Approval requested');
                   } else if (event.eventType === 'approval_response' && payload) {

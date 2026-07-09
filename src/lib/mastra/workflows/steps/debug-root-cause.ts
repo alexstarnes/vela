@@ -4,6 +4,7 @@ import { tasks } from '@/lib/db/schema';
 import { createMastraAgent } from '@/lib/mastra/agent-factory';
 import { getRuntimeAgentRow } from '@/lib/mastra/agents/runtime-agent-db';
 import { estimateCostUsd, getModelCostRates } from '@/lib/mastra/costs';
+import { isRouterModelAvailable } from '@/lib/mastra/router';
 import { logTaskEvent } from '@/lib/events/logger';
 import { eq } from 'drizzle-orm';
 import { approvedTaskSchema, debugDiagnosedTaskSchema } from './shared';
@@ -26,10 +27,11 @@ export const selectDebugRootCauseStep = createStep({
       throw new Error('Runtime Supervisor agent not found');
     }
 
+    const preferredModel = 'anthropic/claude-sonnet-4-5';
     const { agent, provider, resolvedModelId } = await createMastraAgent(
       supervisor,
       task,
-      'anthropic/claude-sonnet-4-5',
+      (await isRouterModelAvailable(preferredModel)) ? preferredModel : undefined,
     );
     const response = await agent.generate(
       `Pick the most likely root cause and produce a concise patch plan.

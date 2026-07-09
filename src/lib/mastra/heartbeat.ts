@@ -25,83 +25,7 @@ import { classifyTaskMode } from '@/lib/orchestration/mode-classifier';
 import { incrementTaskFailureCount } from '@/lib/orchestration/escalation';
 import { selectWorkflowForClassification, type WorkflowId } from '@/lib/orchestration/workflow-selector';
 import { estimateCostUsd, getModelCostRates } from './costs';
-
-/**
- * Normalize tool-call objects from Mastra / AI SDK (shape varies by provider & version).
- * Without this, `toolName`/`input` are often missing → everything becomes "unknown:{}" and
- * loop detection false-positives when the same step is reflected multiple times in `steps`.
- */
-function extractToolCallMeta(tc: unknown): {
-  toolName: string;
-  toolInput: unknown;
-  toolCallId: string | null;
-} {
-  if (!tc || typeof tc !== 'object') {
-    return { toolName: 'unknown', toolInput: {}, toolCallId: null };
-  }
-
-  const r = tc as Record<string, unknown>;
-
-  // Mastra v1.23+ stream chunks: { type: 'tool-call', payload: { toolCallId, toolName, args } }
-  if (r.payload && typeof r.payload === 'object') {
-    const pl = r.payload as Record<string, unknown>;
-    if (
-      r.type === 'tool-call' ||
-      typeof pl.toolName === 'string' ||
-      typeof pl.toolCallId === 'string' ||
-      pl.args !== undefined ||
-      pl.input !== undefined
-    ) {
-      return extractToolCallMeta(r.payload);
-    }
-  }
-
-  if (
-    r.toolInvocation &&
-    typeof r.toolInvocation === 'object' &&
-    !r.toolName &&
-    !r.name &&
-    !r.function
-  ) {
-    return extractToolCallMeta(r.toolInvocation);
-  }
-
-  const toolCallId =
-    (typeof r.toolCallId === 'string' && r.toolCallId) ||
-    (typeof r.id === 'string' && r.id) ||
-    null;
-
-  let toolName =
-    (typeof r.toolName === 'string' && r.toolName) ||
-    (typeof r.name === 'string' && r.name) ||
-    (typeof r.tool === 'string' && r.tool) ||
-    '';
-
-  let toolInput: unknown =
-    r.input ?? r.args ?? r.arguments ?? r.parameters;
-
-  const fn = r.function;
-  if (fn && typeof fn === 'object') {
-    const f = fn as Record<string, unknown>;
-    if (!toolName && typeof f.name === 'string') toolName = f.name;
-    if (toolInput === undefined || toolInput === null) {
-      if (f.arguments !== undefined) toolInput = f.arguments;
-    }
-  }
-
-  if (!toolName) toolName = 'unknown';
-  if (toolInput === undefined || toolInput === null) toolInput = {};
-
-  if (typeof toolInput === 'string') {
-    try {
-      toolInput = JSON.parse(toolInput) as unknown;
-    } catch {
-      toolInput = { _raw: toolInput };
-    }
-  }
-
-  return { toolName, toolInput, toolCallId };
-}
+import { extractToolCallMeta } from './tool-call-meta';
 
 // ─── Agent requires_approval check ────────────────────────────────
 function agentRequiresApproval(dbAgent: DbAgent): boolean {
@@ -385,12 +309,52 @@ function selectRuntimeWorkflow(
   return selectWorkflowForClassification(classification).workflowId;
 }
 
+function describeUnknownError(error: unknown): string {
+  if (!error) return '';
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  const message = (error as { message?: unknown }).message;
+  return typeof message === 'string' ? message : JSON.stringify(error);
+}
+
+/** Extract the root cause from a failed Mastra workflow run so task error events are actionable. */
+function describeWorkflowFailure(result: unknown): string {
+  const record = result as {
+    error?: unknown;
+    steps?: Record<string, { status?: string; error?: unknown } | undefined>;
+  };
+
+  const parts: string[] = [];
+  const rootError = describeUnknownError(record.error);
+  if (rootError) {
+    parts.push(rootError);
+  }
+
+  for (const [stepId, step] of Object.entries(record.steps ?? {})) {
+    if (step?.status === 'failed') {
+      const stepError = describeUnknownError(step.error);
+      parts.push(`step ${stepId}: ${stepError || 'failed without error detail'}`);
+    }
+  }
+
+  return [...new Set(parts)].join(' | ');
+}
+
+interface WorkflowRunOutcome {
+  totalTokens: number;
+  costUsd: string;
+  /** Task status the workflow finalized to (workflow path only). */
+  finalStatus?: 'review' | 'open' | 'waiting_for_human';
+  /** Outcome kind from the route-outcome step (workflow path only). */
+  outcomeKind?: 'review_ready' | 'requeue' | 'waiting_for_human';
+}
+
 async function runWorkflowOnTask(
   dbAgent: DbAgent,
   checkedOutTask: Task,
   heartbeatId: string,
   workflowId: WorkflowId,
-): Promise<{ totalTokens: number; costUsd: string }> {
+): Promise<WorkflowRunOutcome> {
   await logTaskEvent({
     taskId: checkedOutTask.id,
     agentId: dbAgent.id,
@@ -412,16 +376,87 @@ async function runWorkflowOnTask(
   });
 
   if (result.status !== 'success') {
-    throw new Error(`Workflow "${workflowId}" exited with status "${result.status}"`);
+    const detail = describeWorkflowFailure(result);
+    throw new Error(
+      `Workflow "${workflowId}" exited with status "${result.status}"${detail ? ` — ${detail}` : ''}`,
+    );
   }
 
   const workflowResult = result.result as {
     usage?: { totalTokens: number; totalCostUsd: string };
+    finalStatus?: 'review' | 'open' | 'waiting_for_human';
+    outcome?: { kind?: 'review_ready' | 'requeue' | 'waiting_for_human' };
   };
 
   return {
     totalTokens: workflowResult.usage?.totalTokens ?? 0,
     costUsd: workflowResult.usage?.totalCostUsd ?? '0.000000',
+    finalStatus: workflowResult.finalStatus,
+    outcomeKind: workflowResult.outcome?.kind,
+  };
+}
+
+/** Max workflow runs per heartbeat invocation when the workflow requeues for rework. */
+const MAX_WORKFLOW_ATTEMPTS_PER_HEARTBEAT = 3;
+
+/**
+ * Run the workflow on a task, automatically re-dispatching bounded rework
+ * attempts while the workflow requeues the task (verification failure or
+ * reviewer-requested rework). The task lock is held for the whole loop, so
+ * attempts are strictly sequential. Budget is spent per attempt so the
+ * exceeded check sees real numbers between runs.
+ */
+async function runWorkflowWithReworkLoop(
+  dbAgent: DbAgent,
+  checkedOutTask: Task,
+  heartbeatId: string,
+  workflowId: WorkflowId,
+): Promise<{ totalTokens: number; costUsd: string; budgetExceeded: boolean }> {
+  let totalTokens = 0;
+  let totalCostUsd = 0;
+
+  for (let attempt = 1; attempt <= MAX_WORKFLOW_ATTEMPTS_PER_HEARTBEAT; attempt += 1) {
+    const run = await runWorkflowOnTask(dbAgent, checkedOutTask, heartbeatId, workflowId);
+    totalTokens += run.totalTokens;
+    totalCostUsd += parseFloat(run.costUsd);
+
+    // Spend per attempt so budget enforcement can stop the loop mid-way.
+    const budgetResult = await spendBudget(dbAgent.id, run.costUsd, checkedOutTask.id);
+    if (budgetResult.status === 'exceeded') {
+      return {
+        totalTokens,
+        costUsd: totalCostUsd.toFixed(6),
+        budgetExceeded: true,
+      };
+    }
+
+    const shouldRework =
+      run.finalStatus === 'open' && run.outcomeKind === 'requeue';
+    if (!shouldRework || attempt === MAX_WORKFLOW_ATTEMPTS_PER_HEARTBEAT) {
+      break;
+    }
+
+    await db
+      .update(tasks)
+      .set({ status: 'in_progress', updatedAt: new Date() })
+      .where(eq(tasks.id, checkedOutTask.id));
+
+    await logTaskEvent({
+      taskId: checkedOutTask.id,
+      agentId: dbAgent.id,
+      eventType: 'status_change',
+      payload: {
+        from: 'open',
+        to: 'in_progress',
+        reason: `Automatic rework attempt ${attempt + 1}/${MAX_WORKFLOW_ATTEMPTS_PER_HEARTBEAT}`,
+      },
+    });
+  }
+
+  return {
+    totalTokens,
+    costUsd: totalCostUsd.toFixed(6),
+    budgetExceeded: false,
   };
 }
 
@@ -555,25 +590,33 @@ export async function executeHeartbeat(agentId: string): Promise<{
       payload: { from: 'open', to: 'in_progress', reason: 'Heartbeat checkout' },
     });
 
-    // 7. Run either the workflow runtime path or the legacy agent path
+    // 7. Run either the workflow runtime path (bounded rework loop, spends
+    //    budget per attempt) or the legacy agent path (single spend below).
     const runtimeWorkflow = selectRuntimeWorkflow(dbAgent, checkedOutTask);
-    const { totalTokens, costUsd } = runtimeWorkflow
-      ? await runWorkflowOnTask(
-          dbAgent,
-          checkedOutTask,
-          heartbeatRecord.id,
-          runtimeWorkflow,
-        )
-      : await runAgentOnTask(
-          dbAgent,
-          checkedOutTask,
-          heartbeatRecord.id,
-        );
+    let totalTokens: number;
+    let costUsd: string;
+    let budgetExceeded: boolean;
 
-    // 8. Spend budget atomically (single UPDATE) — after execution so we know actual cost
-    const budgetResult = await spendBudget(agentId, costUsd, checkedOutTask.id);
+    if (runtimeWorkflow) {
+      const run = await runWorkflowWithReworkLoop(
+        dbAgent,
+        checkedOutTask,
+        heartbeatRecord.id,
+        runtimeWorkflow,
+      );
+      totalTokens = run.totalTokens;
+      costUsd = run.costUsd;
+      budgetExceeded = run.budgetExceeded;
+    } else {
+      const run = await runAgentOnTask(dbAgent, checkedOutTask, heartbeatRecord.id);
+      totalTokens = run.totalTokens;
+      costUsd = run.costUsd;
+      // 8. Spend budget atomically (single UPDATE) — after execution so we know actual cost
+      const budgetResult = await spendBudget(agentId, costUsd, checkedOutTask.id);
+      budgetExceeded = budgetResult.status === 'exceeded';
+    }
 
-    if (budgetResult.status === 'exceeded') {
+    if (budgetExceeded) {
       // Agent is now paused; task transitions to blocked
       await db
         .update(tasks)
@@ -786,23 +829,30 @@ export async function executeHeartbeatForTask(
 
       const taskInProgress = { ...task, status: 'in_progress' } as Task;
       const runtimeWorkflow = selectRuntimeWorkflow(dbAgent, taskInProgress);
-      const { totalTokens, costUsd } = runtimeWorkflow
-        ? await runWorkflowOnTask(
-            dbAgent,
-            taskInProgress,
-            heartbeatRecord.id,
-            runtimeWorkflow,
-          )
-        : await runAgentOnTask(
-            dbAgent,
-            taskInProgress,
-            heartbeatRecord.id,
-          );
+      let totalTokens: number;
+      let costUsd: string;
+      let budgetExceeded: boolean;
 
-      // Atomic budget spend
-      const budgetResult = await spendBudget(dbAgent.id, costUsd, taskId);
+      if (runtimeWorkflow) {
+        const run = await runWorkflowWithReworkLoop(
+          dbAgent,
+          taskInProgress,
+          heartbeatRecord.id,
+          runtimeWorkflow,
+        );
+        totalTokens = run.totalTokens;
+        costUsd = run.costUsd;
+        budgetExceeded = run.budgetExceeded;
+      } else {
+        const run = await runAgentOnTask(dbAgent, taskInProgress, heartbeatRecord.id);
+        totalTokens = run.totalTokens;
+        costUsd = run.costUsd;
+        // Atomic budget spend
+        const budgetResult = await spendBudget(dbAgent.id, costUsd, taskId);
+        budgetExceeded = budgetResult.status === 'exceeded';
+      }
 
-      if (budgetResult.status === 'exceeded') {
+      if (budgetExceeded) {
         await db
           .update(tasks)
           .set({ status: 'blocked', updatedAt: new Date() })

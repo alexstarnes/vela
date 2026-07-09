@@ -7,15 +7,29 @@
  */
 
 import { db } from '@/lib/db';
-import { modelConfigs, tasks } from '@/lib/db/schema';
+import { agents, modelConfigs, tasks } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { logTaskEvent } from '@/lib/events/logger';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModelV3 } from '@ai-sdk/provider-v6';
-import { escalateTierFromFailureCount } from '@/lib/orchestration/escalation';
-import { classifyTaskMode } from '@/lib/orchestration/mode-classifier';
+import { getRuntimeAgentDefinition } from './agents';
+import { checkCliLaneHealth, type CliName } from '@/lib/helper/client';
+import {
+  cliNameForModelId,
+  isCliLaneCoolingDown,
+} from '@/lib/orchestration/cli-lane';
+import {
+  chooseModelCandidate,
+  desiredTierFromFailureHistory,
+  isCapabilityIncrease,
+  normalizeTier,
+  tierRank,
+  type ExecutionTier,
+  type ModelHealthState,
+  type ModelSelectionCandidate,
+} from '@/lib/orchestration/model-selection';
 import { applyRoutingTierFloor } from '@/lib/orchestration/routing-tuning';
-import { selectWorkflowForClassification } from '@/lib/orchestration/workflow-selector';
+import { getTaskExecutionPolicy } from '@/lib/orchestration/task-shape';
 
 const OLLAMA_TIMEOUT_MS = 3000;
 export const FALLBACK_MODEL = 'anthropic/claude-sonnet-4-5';
@@ -46,6 +60,25 @@ export function getFallbackModelForTier(
   return map[tier ?? 'standard'] ?? FALLBACK_MODEL;
 }
 
+/**
+ * Whether a hardcoded router model string ("openai/gpt-5.4-mini") is allowed
+ * per the operator's model_configs availability flags. Models without a config
+ * row are allowed (legacy hardcoded defaults).
+ */
+export async function isRouterModelAvailable(routerModelId: string): Promise<boolean> {
+  const [provider, ...rest] = routerModelId.split('/');
+  const modelId = rest.join('/');
+  if (!provider || !modelId) {
+    return true;
+  }
+
+  const config = await db.query.modelConfigs.findFirst({
+    where: eq(modelConfigs.modelId, modelId),
+  });
+
+  return config ? config.isAvailable : true;
+}
+
 export interface ResolvedModel {
   /**
    * For cloud providers: a model router string like "anthropic/claude-sonnet-4-5".
@@ -57,12 +90,32 @@ export interface ResolvedModel {
   isFallback: boolean;
   /** Provider: anthropic | ollama */
   provider: string;
+  /** Stable label like ollama/qwen3:8b or openai/gpt-4o-mini. */
+  resolvedModelId: string;
 }
 
 /**
  * Check whether the Ollama tunnel is reachable.
  */
 export async function checkOllamaHealth(tunnelUrl: string): Promise<boolean> {
+  return (await getOllamaInstalledModels(tunnelUrl)) !== null;
+}
+
+const ollamaTagsCache = new Map<string, { fetchedAt: number; models: Set<string> | null }>();
+const OLLAMA_TAGS_TTL_MS = 10_000;
+
+/**
+ * Fetch the set of model names installed on an Ollama instance.
+ * Returns null when the endpoint is unreachable. Cached briefly so a single
+ * model resolution doesn't hammer /api/tags.
+ */
+export async function getOllamaInstalledModels(tunnelUrl: string): Promise<Set<string> | null> {
+  const cached = ollamaTagsCache.get(tunnelUrl);
+  if (cached && Date.now() - cached.fetchedAt < OLLAMA_TAGS_TTL_MS) {
+    return cached.models;
+  }
+
+  let models: Set<string> | null = null;
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
@@ -71,10 +124,28 @@ export async function checkOllamaHealth(tunnelUrl: string): Promise<boolean> {
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
-    return res.ok;
+    if (res.ok) {
+      const data = (await res.json()) as {
+        models?: Array<{ name?: string; model?: string }>;
+      };
+      models = new Set<string>();
+      for (const model of data.models ?? []) {
+        if (model.name) models.add(model.name);
+        if (model.model) models.add(model.model);
+      }
+    }
   } catch {
-    return false;
+    models = null;
   }
+
+  ollamaTagsCache.set(tunnelUrl, { fetchedAt: Date.now(), models });
+  return models;
+}
+
+/** A bare model id like "qwen3" matches the installed tag "qwen3:latest". */
+function isOllamaModelInstalled(installed: Set<string>, modelId: string): boolean {
+  if (installed.has(modelId)) return true;
+  return !modelId.includes(':') && installed.has(`${modelId}:latest`);
 }
 
 /**
@@ -86,10 +157,16 @@ export async function resolveModel(
   modelConfigId: string | null,
   taskId?: string,
   agentId?: string,
+  stepTierFloor?: ExecutionTier,
 ): Promise<ResolvedModel> {
   // If no model config set, use the fallback directly
   if (!modelConfigId) {
-    return { modelId: FALLBACK_MODEL, isFallback: false, provider: 'anthropic' };
+    return {
+      modelId: FALLBACK_MODEL,
+      isFallback: false,
+      provider: 'anthropic',
+      resolvedModelId: FALLBACK_MODEL,
+    };
   }
 
   const config = await db.query.modelConfigs.findFirst({
@@ -98,114 +175,144 @@ export async function resolveModel(
 
   if (!config) {
     console.warn(`[router] model_config ${modelConfigId} not found, using fallback`);
-    return { modelId: FALLBACK_MODEL, isFallback: true, provider: 'anthropic' };
+    return {
+      modelId: FALLBACK_MODEL,
+      isFallback: true,
+      provider: 'anthropic',
+      resolvedModelId: FALLBACK_MODEL,
+    };
   }
 
-  if (taskId) {
-    const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
+  const [task, agentRow] = await Promise.all([
+    taskId
+      ? db.query.tasks.findFirst({
+          where: eq(tasks.id, taskId),
+        })
+      : Promise.resolve(null),
+    agentId
+      ? db.query.agents.findFirst({
+          where: eq(agents.id, agentId),
+          with: {
+            allowedModels: {
+              with: {
+                modelConfig: true,
+              },
+            },
+          },
+        })
+      : Promise.resolve(null),
+  ]);
+
+  let desiredTier = normalizeTier(config.tier);
+
+  if (task) {
+    const policy = getTaskExecutionPolicy(task);
+    const routingAdjustment = await applyRoutingTierFloor({
+      classification: policy.classification,
+      workflowId: policy.workflowId,
+      task,
+    });
+    desiredTier = desiredTierFromFailureHistory({
+      effectiveTier: routingAdjustment.effectiveTier,
+      failureCount: task.failureCount,
+      preserveRoutedTier: policy.isLowRiskFeature,
     });
 
-    if (task) {
-      const classification = classifyTaskMode(task);
-      const workflowSelection = selectWorkflowForClassification(classification);
-      const routingAdjustment = await applyRoutingTierFloor({
-        classification,
-        workflowId: workflowSelection.workflowId,
-        task,
+    if (routingAdjustment.floorApplied) {
+      await logTaskEvent({
+        taskId: task.id,
+        agentId,
+        eventType: 'routing_tuning',
+        payload: {
+          workflow_id: policy.workflowId,
+          base_tier: config.tier,
+          tuned_tier: routingAdjustment.effectiveTier,
+          reason: routingAdjustment.reason,
+        },
       });
-      const escalatedTier = escalateTierFromFailureCount(
-        routingAdjustment.effectiveTier,
+    }
+
+    if (stepTierFloor && tierRank(stepTierFloor) > tierRank(desiredTier)) {
+      desiredTier = stepTierFloor;
+    }
+
+    if (!policy.isLowRiskFeature && isCapabilityIncrease(config.tier, desiredTier)) {
+      const upwardModel = getFallbackModelForTier(desiredTier, task.priority);
+      await logEscalationEvent(
+        task.id,
+        agentId,
+        config.tier,
+        desiredTier,
         task.failureCount,
+        upwardModel,
       );
-
-      if (routingAdjustment.floorApplied) {
-        await logTaskEvent({
-          taskId: task.id,
-          agentId,
-          eventType: 'routing_tuning',
-          payload: {
-            workflow_id: workflowSelection.workflowId,
-            base_tier: config.tier,
-            tuned_tier: routingAdjustment.effectiveTier,
-            reason: routingAdjustment.reason,
-          },
-        });
-      }
-
-      if (escalatedTier !== config.tier) {
-        const escalatedModel = getFallbackModelForTier(escalatedTier, task.priority);
-        await logEscalationEvent(
-          task.id,
-          agentId,
-          config.tier,
-          escalatedTier,
-          task.failureCount,
-          escalatedModel,
-        );
-        return {
-          modelId: escalatedModel,
-          isFallback: true,
-          provider: escalatedModel.split('/')[0] || 'anthropic',
-        };
-      }
     }
   }
 
-  // Cloud providers — use directly
-  if (config.provider === 'anthropic') {
-    return {
-      modelId: `anthropic/${config.modelId}`,
-      isFallback: false,
-      provider: 'anthropic',
-    };
+  const healthCache = new Map<string, ModelHealthState>();
+  const candidates = await buildCandidatePool({
+    configuredModelId: config.id,
+    agentRow: agentRow ?? null,
+    healthCache,
+  });
+  const configuredCandidate =
+    candidates.find((candidate) => candidate.id === config.id) ??
+    (await createCandidate(config, healthCache));
+  const selection = chooseModelCandidate({
+    configured: configuredCandidate,
+    candidates,
+    desiredTier,
+  });
+  const resolved = await materializeSelectedModel(selection.selected);
+
+  if (task) {
+    await logTaskEvent({
+      taskId: task.id,
+      agentId,
+      eventType: 'model_call',
+      payload: {
+        configured_model: `${config.provider}/${config.modelId}`,
+        selected_model: resolved.resolvedModelId,
+        selected_provider: resolved.provider,
+        selection_reason: selection.selectionReason,
+        selection_kind: selection.selectionKind,
+        health_state: selection.selected.healthState,
+        desired_tier: desiredTier,
+      },
+    });
   }
 
-  if (config.provider === 'openai') {
-    return {
-      modelId: `openai/${config.modelId}`,
-      isFallback: false,
-      provider: 'openai',
-    };
+  if (
+    (selection.selectionKind === 'cloud_fallback' || selection.selectionKind === 'cli_fallback') &&
+    task
+  ) {
+    const laneDescription =
+      selection.selectionKind === 'cli_fallback'
+        ? `Selected ${resolved.resolvedModelId} (subscription CLI) because no healthy local candidate satisfied the ${desiredTier} tier policy`
+        : `Selected ${resolved.resolvedModelId} because no healthy local candidate satisfied the ${desiredTier} tier policy`;
+    await logFallbackEvent(
+      task.id,
+      agentId,
+      config.modelId,
+      laneDescription,
+      {
+        selected_model: resolved.resolvedModelId,
+        selection_kind: selection.selectionKind,
+        health_state: selection.selected.healthState,
+      },
+    );
   }
 
-  // Ollama — check tunnel health first
-  if (config.provider === 'ollama') {
-    const tunnelUrl = config.endpointUrl || process.env.OLLAMA_TUNNEL_URL;
+  const expectedResolvedModelId =
+    selection.selected.provider === 'ollama'
+      ? `ollama/${selection.selected.modelId}`
+      : `${selection.selected.provider}/${selection.selected.modelId}`;
 
-    if (!tunnelUrl) {
-      console.warn('[router] No OLLAMA_TUNNEL_URL configured, falling back to cloud');
-      await logFallbackEvent(taskId, agentId, config.modelId, 'No tunnel URL configured');
-      return { modelId: FALLBACK_MODEL, isFallback: true, provider: 'anthropic' };
-    }
-
-    const isOnline = await checkOllamaHealth(tunnelUrl);
-
-    if (isOnline) {
-      // Create a real LanguageModel instance via @ai-sdk/openai-compatible.
-      // Ollama exposes an OpenAI-compatible API, so we point at its /v1 path.
-      // No API key needed for local Ollama; we pass a dummy value.
-      const ollama = createOpenAICompatible({
-        name: 'ollama',
-        baseURL: `${tunnelUrl}/v1`,
-        apiKey: 'ollama', // Ollama doesn't require auth
-      });
-      return {
-        modelId: ollama.chatModel(config.modelId),
-        isFallback: false,
-        provider: 'ollama',
-      };
-    }
-
-    // Ollama offline — fallback
-    console.warn(`[router] Ollama offline at ${tunnelUrl}, falling back to ${FALLBACK_MODEL}`);
-    await logFallbackEvent(taskId, agentId, config.modelId, `Ollama unreachable at ${tunnelUrl}`);
-    return { modelId: FALLBACK_MODEL, isFallback: true, provider: 'anthropic' };
-  }
-
-  // Unknown provider
-  console.warn(`[router] Unknown provider "${config.provider}", using fallback`);
-  return { modelId: FALLBACK_MODEL, isFallback: true, provider: 'anthropic' };
+  return {
+    ...resolved,
+    isFallback:
+      selection.selected.id !== config.id || resolved.resolvedModelId !== expectedResolvedModelId,
+  };
 }
 
 async function logFallbackEvent(
@@ -213,6 +320,7 @@ async function logFallbackEvent(
   agentId: string | undefined,
   configuredModel: string,
   reason: string,
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
   if (!taskId) return;
   try {
@@ -222,8 +330,11 @@ async function logFallbackEvent(
       eventType: 'model_fallback',
       payload: {
         configured_model: configuredModel,
-        fallback_model: FALLBACK_MODEL,
+        // Callers pass the actually selected model in `extra.selected_model`;
+        // default to the legacy constant only when none is provided.
+        fallback_model: extra.selected_model ?? FALLBACK_MODEL,
         reason,
+        ...extra,
       },
     });
   } catch (err) {
@@ -249,11 +360,204 @@ async function logEscalationEvent(
         to_tier: toTier,
         failure_count: failureCount,
         resolved_model: modelId,
+        selection_kind: 'tier_up',
       },
     });
   } catch (err) {
     console.error('[router] Failed to log model_escalation event:', err);
   }
+}
+
+async function createCandidate(
+  config: typeof modelConfigs.$inferSelect,
+  healthCache: Map<string, ModelHealthState>,
+): Promise<ModelSelectionCandidate> {
+  return {
+    id: config.id,
+    modelId: config.modelId,
+    provider: config.provider,
+    tier: config.tier,
+    isLocal: config.isLocal,
+    isAvailable: config.isAvailable,
+    healthState: await getCandidateHealth(config, healthCache),
+  };
+}
+
+async function buildCandidatePool(params: {
+  configuredModelId: string;
+  agentRow:
+    | ({
+        name: string;
+        allowedModels?: Array<{
+          modelConfig:
+            | (typeof modelConfigs.$inferSelect)
+            | null;
+        }>;
+      })
+    | null;
+  healthCache: Map<string, ModelHealthState>;
+}): Promise<ModelSelectionCandidate[]> {
+  const modelPool = new Map<string, typeof modelConfigs.$inferSelect>();
+
+  if (params.agentRow?.allowedModels) {
+    for (const access of params.agentRow.allowedModels) {
+      if (access.modelConfig) {
+        modelPool.set(access.modelConfig.id, access.modelConfig);
+      }
+    }
+  }
+
+  const runtimeDefinition = params.agentRow?.name
+    ? getRuntimeAgentDefinition(params.agentRow.name)
+    : null;
+  if (runtimeDefinition) {
+    const extraConfigs = await db.query.modelConfigs.findMany();
+    const allowedModelIds = runtimeDefinition.allowedModelIds as readonly string[];
+    for (const extraConfig of extraConfigs) {
+      if (allowedModelIds.includes(extraConfig.modelId)) {
+        modelPool.set(extraConfig.id, extraConfig);
+      }
+    }
+  }
+
+  const configuredModel = await db.query.modelConfigs.findFirst({
+    where: eq(modelConfigs.id, params.configuredModelId),
+  });
+
+  if (configuredModel) {
+    modelPool.set(configuredModel.id, configuredModel);
+  }
+
+  const candidates: ModelSelectionCandidate[] = [];
+  for (const modelConfig of modelPool.values()) {
+    candidates.push(await createCandidate(modelConfig, params.healthCache));
+  }
+
+  return candidates;
+}
+
+const cliHealthCache = new Map<CliName, { fetchedAt: number; available: boolean }>();
+const CLI_HEALTH_TTL_MS = 10_000;
+
+/**
+ * Live health for a CLI lane candidate: the lane is online when the helper is
+ * reachable, the CLI binary responds, and the lane is not in a cap cooldown.
+ */
+async function getCliLaneHealth(modelId: string): Promise<ModelHealthState> {
+  const cli = cliNameForModelId(modelId);
+  if (isCliLaneCoolingDown(cli)) {
+    return 'offline';
+  }
+
+  const cached = cliHealthCache.get(cli);
+  if (cached && Date.now() - cached.fetchedAt < CLI_HEALTH_TTL_MS) {
+    return cached.available ? 'online' : 'offline';
+  }
+
+  const health = await checkCliLaneHealth(cli);
+  cliHealthCache.set(cli, { fetchedAt: Date.now(), available: health.available });
+  return health.available ? 'online' : 'offline';
+}
+
+async function getCandidateHealth(
+  config: typeof modelConfigs.$inferSelect,
+  healthCache: Map<string, ModelHealthState>,
+): Promise<ModelHealthState> {
+  if (config.provider === 'cli') {
+    if (!config.isAvailable) {
+      return 'unknown';
+    }
+    const cacheKey = `cli|${config.modelId}`;
+    const cached = healthCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const state = await getCliLaneHealth(config.modelId);
+    healthCache.set(cacheKey, state);
+    return state;
+  }
+
+  if (config.provider !== 'ollama') {
+    return config.isAvailable ? 'online' : 'unknown';
+  }
+
+  const tunnelUrl = config.endpointUrl || process.env.OLLAMA_TUNNEL_URL;
+  if (!tunnelUrl) {
+    return 'offline';
+  }
+
+  const cacheKey = `${tunnelUrl}|${config.modelId}`;
+  const cached = healthCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  // A model is only "online" when the endpoint is reachable AND the exact
+  // model is installed there — otherwise generate calls fail mid-task.
+  const installed = await getOllamaInstalledModels(tunnelUrl);
+  const nextState =
+    installed && isOllamaModelInstalled(installed, config.modelId) ? 'online' : 'offline';
+  healthCache.set(cacheKey, nextState);
+  return nextState;
+}
+
+async function materializeSelectedModel(selected: ModelSelectionCandidate): Promise<ResolvedModel> {
+  if (selected.provider === 'anthropic' || selected.provider === 'openai') {
+    const resolvedModelId = `${selected.provider}/${selected.modelId}`;
+    return {
+      modelId: resolvedModelId,
+      provider: selected.provider,
+      resolvedModelId,
+      isFallback: false,
+    };
+  }
+
+  if (selected.provider === 'cli') {
+    // CLI lanes are execution backends, not token-level models: the implement
+    // step routes these to the helper's /cli/execute instead of agent.generate.
+    const resolvedModelId = `cli/${selected.modelId}`;
+    return {
+      modelId: resolvedModelId,
+      provider: 'cli',
+      resolvedModelId,
+      isFallback: false,
+    };
+  }
+
+  if (selected.provider === 'ollama') {
+    const config = await db.query.modelConfigs.findFirst({
+      where: eq(modelConfigs.id, selected.id),
+    });
+    const tunnelUrl = config?.endpointUrl || process.env.OLLAMA_TUNNEL_URL;
+
+    if (!tunnelUrl) {
+      return {
+        modelId: FALLBACK_MODEL,
+        provider: 'anthropic',
+        resolvedModelId: FALLBACK_MODEL,
+        isFallback: true,
+      };
+    }
+
+    const ollama = createOpenAICompatible({
+      name: 'ollama',
+      baseURL: `${tunnelUrl}/v1`,
+      apiKey: 'ollama',
+    });
+    return {
+      modelId: ollama.chatModel(selected.modelId),
+      provider: 'ollama',
+      resolvedModelId: `ollama/${selected.modelId}`,
+      isFallback: false,
+    };
+  }
+
+  return {
+    modelId: FALLBACK_MODEL,
+    provider: 'anthropic',
+    resolvedModelId: FALLBACK_MODEL,
+    isFallback: true,
+  };
 }
 
 /**
@@ -278,7 +582,8 @@ export async function listAvailableModels(): Promise<
       let isOnline = true;
       if (c.provider === 'ollama') {
         const tunnelUrl = c.endpointUrl || process.env.OLLAMA_TUNNEL_URL;
-        isOnline = tunnelUrl ? await checkOllamaHealth(tunnelUrl) : false;
+        const installed = tunnelUrl ? await getOllamaInstalledModels(tunnelUrl) : null;
+        isOnline = installed ? isOllamaModelInstalled(installed, c.modelId) : false;
       }
       return {
         id: c.id,

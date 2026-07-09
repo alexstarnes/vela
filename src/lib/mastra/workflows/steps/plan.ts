@@ -4,8 +4,11 @@ import { tasks } from '@/lib/db/schema';
 import { logTaskEvent } from '@/lib/events/logger';
 import { createMastraAgent } from '@/lib/mastra/agent-factory';
 import { getRuntimeAgentRow } from '@/lib/mastra/agents/runtime-agent-db';
-import { estimateCostUsd, getModelCostRates } from '@/lib/mastra/costs';
+import { isRouterModelAvailable } from '@/lib/mastra/router';
+import { buildLowRiskDeterministicPlan } from '@/lib/orchestration/low-risk-discovery';
+import { getTaskExecutionPolicy } from '@/lib/orchestration/task-shape';
 import { eq } from 'drizzle-orm';
+import { createWorkflowStepTelemetry } from './agent-telemetry';
 import { plannedTaskSchema, repoMappedTaskSchema } from './shared';
 
 function supervisorModelOverride(workflowId: string, score: number): string | undefined {
@@ -37,11 +40,45 @@ export const planTaskStep = createStep({
     if (!task) throw new Error(`Task ${inputData.taskId} not found`);
     if (!supervisor) throw new Error('Runtime Supervisor agent not found');
 
-    const modelOverride = supervisorModelOverride(
+    const executionPolicy = getTaskExecutionPolicy(task);
+    if (executionPolicy.isLowRiskFeature) {
+      const planText = buildLowRiskDeterministicPlan(task, inputData.repoMap);
+      await logTaskEvent({
+        taskId: task.id,
+        agentId: supervisor.id,
+        eventType: 'message',
+        payload: { role: 'system', content: `Supervisor plan\n\n${planText}` },
+      });
+
+      return {
+        ...inputData,
+        planText,
+        supervisorModel: 'deterministic/low-risk-plan',
+        usage: {
+          totalTokens: 0,
+          totalCostUsd: '0.000000',
+        },
+      };
+    }
+
+    const preferredOverride = supervisorModelOverride(
       inputData.workflowSelection.workflowId,
       inputData.classification.score,
     );
+    // Skip the hardcoded override when that model is disabled in model configs;
+    // the router then resolves the Supervisor's configured model instead.
+    const modelOverride =
+      preferredOverride && (await isRouterModelAvailable(preferredOverride))
+        ? preferredOverride
+        : undefined;
     const { agent, provider, resolvedModelId } = await createMastraAgent(supervisor, task, modelOverride);
+    const telemetry = createWorkflowStepTelemetry({
+      taskId: task.id,
+      agentId: supervisor.id,
+      stepId: 'plan-task',
+      modelConfigId: modelOverride ? null : supervisor.modelConfigId,
+      resolvedModelId: modelOverride ?? resolvedModelId ?? provider,
+    });
 
     const response = await agent.generate(
       `Create a short execution plan for this task.
@@ -55,38 +92,38 @@ Return:
 - 3-6 short implementation bullets
 - likely files or modules to inspect first
 - the smallest useful verification sequence`,
-      { maxSteps: Math.min(supervisor.maxIterations ?? 6, 6) },
+      {
+        maxSteps: Math.min(
+          supervisor.maxIterations ?? executionPolicy.maxSteps.plan,
+          executionPolicy.maxSteps.plan,
+        ),
+        modelSettings: {
+          maxOutputTokens: executionPolicy.maxOutputTokens.plan,
+        },
+        onStepFinish: telemetry.onStepFinish,
+        onIterationComplete: telemetry.onIterationComplete,
+        abortSignal: telemetry.abortSignal,
+      },
     );
-
-    const inputTokens = response.usage?.inputTokens ?? 0;
-    const outputTokens = response.usage?.outputTokens ?? 0;
-    const rates = await getModelCostRates({
-      modelConfigId: modelOverride ? null : supervisor.modelConfigId,
-      resolvedModelId: modelOverride ?? resolvedModelId ?? provider,
-    });
-    const costUsd = estimateCostUsd(
-      inputTokens,
-      outputTokens,
-      rates.inputCostPerToken,
-      rates.outputCostPerToken,
-    );
+    const usageTotals = telemetry.getUsageTotals();
+    const planText = response.text.trim()
+      ? response.text
+      : buildLowRiskDeterministicPlan(task, inputData.repoMap);
 
     await logTaskEvent({
       taskId: task.id,
       agentId: supervisor.id,
       eventType: 'message',
-      payload: { role: 'system', content: `Supervisor plan\n\n${response.text}` },
-      tokensUsed: inputTokens + outputTokens,
-      costUsd,
+      payload: { role: 'system', content: `Supervisor plan\n\n${planText}` },
     });
 
     return {
       ...inputData,
-      planText: response.text,
+      planText,
       supervisorModel: modelOverride ?? resolvedModelId ?? provider,
       usage: {
-        totalTokens: inputTokens + outputTokens,
-        totalCostUsd: costUsd,
+        totalTokens: usageTotals.totalTokens,
+        totalCostUsd: usageTotals.totalCostUsd,
       },
     };
   },

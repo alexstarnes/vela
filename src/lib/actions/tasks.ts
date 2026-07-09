@@ -76,6 +76,14 @@ export async function createTask(
     payload: { from: null, to: initialStatus, reason: data.assignedAgentId ? 'Task created with agent assigned' : 'Task created' },
   });
 
+  // Auto-dispatch: an assigned open task should start executing without a
+  // manual "Run agent" click. Fire-and-forget, same as runTaskHeartbeat.
+  if (data.assignedAgentId) {
+    executeHeartbeatForTask(task.id).catch((err) => {
+      console.error(`[createTask] Background heartbeat failed for ${task.id}:`, err);
+    });
+  }
+
   revalidatePath('/tasks');
   revalidatePath(`/projects/${data.projectId}`);
   return { success: true, data: { id: task.id } };
@@ -156,7 +164,9 @@ const RunTaskHeartbeatSchema = z.object({
   taskId: z.string().uuid(),
 });
 
-/** Runs the assigned agent on this task (checkout + model). Does not run on backlog. */
+/** Runs the assigned agent on this task (checkout + model). Does not run on backlog.
+ *  Fire-and-forget: returns immediately while the workflow runs in the background.
+ *  Real-time progress is delivered via the SSE event stream. */
 export async function runTaskHeartbeat(
   input: unknown,
 ): Promise<ActionResult> {
@@ -169,16 +179,14 @@ export async function runTaskHeartbeat(
   }
 
   const { taskId } = parsed.data;
-  const result = await executeHeartbeatForTask(taskId);
 
-  revalidatePath('/tasks');
-  revalidatePath(`/tasks/${taskId}`);
-  revalidatePath('/activity');
-  revalidatePath('/scheduler');
-
-  if (!result.success) {
-    return { success: false, error: result.error ?? 'Agent run failed' };
-  }
+  // Fire-and-forget: run the heartbeat in the background so the UI stays responsive.
+  // Real-time progress is delivered via SSE.  We intentionally do NOT call
+  // revalidatePath here — the promise resolves after the server action has
+  // returned and Next.js is in a render phase, where revalidatePath is illegal.
+  executeHeartbeatForTask(taskId).catch((err) => {
+    console.error(`[runTaskHeartbeat] Background heartbeat failed for ${taskId}:`, err);
+  });
 
   return { success: true, data: undefined };
 }
@@ -228,6 +236,13 @@ export async function assignTask(input: {
       agentId: assignedBy,
       eventType: 'status_change',
       payload: { from: 'backlog', to: 'open', reason: 'Auto-opened on agent assignment' },
+    });
+  }
+
+  // Auto-dispatch newly assigned work (task is open either way at this point).
+  if (agentId && (shouldOpen || task?.status === 'open')) {
+    executeHeartbeatForTask(taskId).catch((err) => {
+      console.error(`[assignTask] Background heartbeat failed for ${taskId}:`, err);
     });
   }
 

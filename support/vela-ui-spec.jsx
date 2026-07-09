@@ -270,7 +270,7 @@ function AgentsListScreen() {
             { name: "Engineer", role: "engineer", model: "Claude Sonnet 4", cron: "*/15 * * * *", budget: 30, used: 8.2, status: "active", tasks: 2 },
             { name: "Researcher", role: "researcher", model: "Claude Haiku 4.5", cron: "*/30 * * * *", budget: 20, used: 4.6, status: "active", tasks: 1 },
             { name: "Writer", role: "writer", model: "Qwen3 8B (Local)", cron: "0 */2 * * *", budget: 10, used: 0.8, status: "active", tasks: 1 },
-            { name: "Junior Dev", role: "engineer", model: "Qwen3 Coder (Local)", cron: "*/30 * * * *", budget: 15, used: 15, status: "budget_exceeded", tasks: 0 },
+            { name: "Junior Dev", role: "engineer", model: "Qwen2.5 Coder 32B (Local)", cron: "*/30 * * * *", budget: 15, used: 15, status: "budget_exceeded", tasks: 0 },
             { name: "Analyst", role: "analyst", model: "Claude Haiku 4.5", cron: "0 9 * * *", budget: 25, used: 0, status: "paused", tasks: 0 },
           ].map(a => (
             <div key={a.name} className="rounded-lg p-4" style={{ background: "#fff", border: `1px solid ${C.stone[200]}` }}>
@@ -543,7 +543,7 @@ function SettingsScreen() {
               {[
                 { name: "Claude Sonnet 4", provider: "anthropic", model: "claude-sonnet-4-*", tier: "standard", cost: "$3.00", available: true },
                 { name: "Claude Haiku 4.5", provider: "anthropic", model: "claude-haiku-4-5-*", tier: "fast", cost: "$0.80", available: true },
-                { name: "Qwen3 Coder", provider: "ollama", model: "qwen3-coder-next", tier: "standard", cost: "$0.00", available: true },
+                { name: "Qwen2.5 Coder 32B", provider: "ollama", model: "qwen2.5-coder:32b", tier: "standard", cost: "$0.00", available: true },
                 { name: "Qwen3 8B", provider: "ollama", model: "qwen3:8b", tier: "fast", cost: "$0.00", available: true },
               ].map((m, i) => (
                 <div key={i} className="grid grid-cols-6 gap-2 items-center px-3 py-2 text-[10px] font-mono border-t" style={{ borderColor: C.stone[100], color: C.stone[500] }}>
