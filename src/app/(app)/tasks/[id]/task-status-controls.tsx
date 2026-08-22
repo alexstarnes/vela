@@ -32,9 +32,11 @@ const NEXT_TRANSITIONS: Record<TaskStatus, { to: TaskStatus; label: string }[]> 
 interface Props {
   task: Task;
   agents: Agent[];
+  /** Override for the review → done button (e.g. "Accept & close" on a PRD-carrier task). */
+  approveLabel?: string;
 }
 
-export function TaskStatusControls({ task, agents: _agents }: Props) {
+export function TaskStatusControls({ task, agents: _agents, approveLabel }: Props) {
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
@@ -106,7 +108,7 @@ export function TaskStatusControls({ task, agents: _agents }: Props) {
             border: '1px solid var(--dark-border)',
           }}
         >
-          {t.label}
+          {t.to === 'done' && currentStatus === 'review' && approveLabel ? approveLabel : t.label}
         </button>
       ))}
     </div>

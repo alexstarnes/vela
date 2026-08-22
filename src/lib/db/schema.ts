@@ -30,6 +30,9 @@ export const projects = pgTable('projects', {
   githubConnectionId: uuid('github_connection_id').references(() => githubConnections.id),
   lastValidatedAt: timestamp('last_validated_at', { withTimezone: true }),
   status: text('status').notNull().default('active'),
+  // Opt-in: approving a prd_backlog kicks a heartbeat for the first created
+  // child immediately. Default off — the no-self-execution invariant.
+  autostartOnBacklogApproval: boolean('autostart_on_backlog_approval').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

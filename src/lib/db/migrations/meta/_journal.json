@@ -64,6 +64,13 @@
       "when": 1787372075209,
       "tag": "0008_smiling_vanisher",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787383230329,
+      "tag": "0009_loud_cobalt_man",
+      "breakpoints": true
     }
   ]
 }

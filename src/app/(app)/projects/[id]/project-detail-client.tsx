@@ -24,6 +24,7 @@ export function ProjectDetailClient({ project }: { project: Project }) {
         name: data.get('name') as string,
         goal: (data.get('goal') as string) || undefined,
         context: (data.get('context') as string) || undefined,
+        autostartOnBacklogApproval: data.get('autostartOnBacklogApproval') === 'on',
       });
 
       if (result.success) {
@@ -134,6 +135,28 @@ export function ProjectDetailClient({ project }: { project: Project }) {
                   }}
                 />
               </div>
+
+              <label
+                className="flex items-start gap-2.5 rounded-md p-3 cursor-pointer"
+                style={{ background: 'var(--dark-surface2)', border: '1px solid var(--dark-border)' }}
+              >
+                <input
+                  type="checkbox"
+                  name="autostartOnBacklogApproval"
+                  defaultChecked={project.autostartOnBacklogApproval}
+                  className="mt-0.5 accent-amber-500"
+                />
+                <span>
+                  <span className="block text-xs font-mono mb-0.5" style={{ color: '#ECEAE4' }}>
+                    Begin implementation on backlog approval
+                  </span>
+                  <span className="block text-[10px] leading-4" style={{ color: 'var(--stone-500)' }}>
+                    When a PRD backlog is approved, immediately run the first created task instead of
+                    waiting for a scheduled heartbeat. Off by default — nothing self-executes unless
+                    you opt this project in.
+                  </span>
+                </span>
+              </label>
 
               {error && (
                 <p className="text-xs" style={{ color: '#C4413A' }}>

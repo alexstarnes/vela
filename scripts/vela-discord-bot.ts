@@ -525,6 +525,7 @@ async function postApprovalRequest(ev: TaskEventPayload, payload: Record<string,
 
   // Enrich from the approval row so the operator sees WHAT they are deciding:
   // the escalated judgment calls and the size of the proposed backlog.
+  let backlogCount: number | null = null;
   try {
     const row = await db.query.approvals.findFirst({ where: eq(approvals.id, approvalId) });
     const p = row?.payload as {
@@ -546,6 +547,7 @@ async function postApprovalRequest(ev: TaskEventPayload, payload: Record<string,
       });
     }
     if (p?.backlog) {
+      backlogCount = p.backlog.length;
       embed.addFields({
         name: 'Proposed backlog',
         value: `${p.backlog.length} item(s)` +
@@ -557,8 +559,12 @@ async function postApprovalRequest(ev: TaskEventPayload, payload: Record<string,
     console.warn('[approval] could not enrich card from DB:', err instanceof Error ? err.message : err);
   }
 
+  // Say what approving DOES: a backlog approval creates tasks, and the button
+  // should admit it (operator feedback — two look-alike "Approve" sign-offs).
+  const approveLabel =
+    backlogCount != null ? `Approve backlog (creates ${backlogCount} tasks)` : 'Approve';
   const decideRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId(`vela-approve:${approvalId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`vela-approve:${approvalId}`).setLabel(approveLabel).setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`vela-reject:${approvalId}`).setLabel('Reject').setStyle(ButtonStyle.Danger),
   );
   const feedbackRow = new ActionRowBuilder<ButtonBuilder>().addComponents(

@@ -156,6 +156,7 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
         where: and(eq(agents.name, 'Supervisor'), eq(agents.agentKind, 'runtime')),
       });
 
+      let firstChildId: string | null = null;
       for (const item of payload.backlog) {
         const description = [
           item.description ?? '',
@@ -182,6 +183,7 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
             status: supervisor ? 'open' : 'backlog',
           })
           .returning({ id: tasks.id });
+        firstChildId ??= child.id;
 
         await logTaskEvent({
           taskId: child.id,
@@ -205,6 +207,33 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
           reason: 'PRD backlog approved — stories entered the build pipeline',
         },
       });
+
+      // Autostart (opt-in per project, default off): kick a heartbeat for the
+      // first created child so an approved backlog starts building without
+      // waiting for a cron tick. Fire-and-forget — approval resolution must
+      // not block on (or fail with) the run it triggers.
+      if (firstChildId) {
+        const { projects } = await import('@/lib/db/schema');
+        const project = await db.query.projects.findFirst({
+          where: eq(projects.id, projectId),
+          columns: { autostartOnBacklogApproval: true },
+        });
+        if (project?.autostartOnBacklogApproval) {
+          const startedChildId = firstChildId;
+          await logTaskEvent({
+            taskId: startedChildId,
+            agentId: approval.agentId,
+            eventType: 'message',
+            payload: {
+              content: 'Autostart: backlog approved with autostart enabled — heartbeat triggered for this task.',
+            },
+          });
+          const { executeHeartbeatForTask } = await import('@/lib/mastra/heartbeat');
+          executeHeartbeatForTask(startedChildId).catch((err) => {
+            console.error(`[approvals] autostart heartbeat failed for ${startedChildId}:`, err);
+          });
+        }
+      }
     }
 
     // Requeue the PRD task so its next heartbeat finalizes the ring (the

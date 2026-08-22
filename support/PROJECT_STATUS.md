@@ -1,6 +1,6 @@
 # Vela — Project Status
 
-**Last updated: 2026-08-21 (evening — after the completion-plan run)**
+**Last updated: 2026-08-22**
 
 > This is the **living status document** for Vela — written for a fresh agent (or the user) picking up this repo cold. It reflects the current state, verified against the actual code, not against older docs.
 >
@@ -155,10 +155,10 @@ aba205e "Initial commit from Mastra"
 
 ## 10. Suggested next actions
 
-In rough priority order, based on §5:
+**The plan for the top structural items now lives in [`support/ORCHESTRATION_HARDENING_PLAN.md`](ORCHESTRATION_HARDENING_PLAN.md)** (2026-08-22): workstream A = workspace hygiene (branch-per-task lifecycle, quarantine, merge-on-approve, per-project serialization), B = backlog dependency ordering (synthesizer `depends_on` → `task_dependencies` table → checkout gate), C = project-level flight view (in-flight strip + topological execution plan). Its §D refinements (distinct approval labels; per-project "begin implementation on backlog approval" toggle, default off) are already built.
 
-1. **Triage the two `waiting_for_human` children** (empty-states, duplicate-detection) and the dark-mode child sitting at `review` — the Clipper backlog is live and waiting on operator decisions.
-2. **Workspace hygiene fix** (§5.1) before running more child tasks unattended — it's the one systemic gap that corrupts otherwise-good runs.
-3. Backlog dependency ordering (§5.2), so approved stories execute in a workable sequence.
-4. Enable the strategist's weekly cron on the Agents UI when ready for standing surveillance (deliberately left off per the no-self-execution seed invariant).
-5. The cosmetic items: budget-warning latch, mode_selection score rendering, Discord card button disable.
+Beyond that plan, in rough priority order:
+
+1. Triage the parked children (empty-states, duplicate-detection) when convenient.
+2. Enable the strategist's weekly cron on the Agents UI when ready for standing surveillance (deliberately left off per the no-self-execution seed invariant).
+3. Remaining cosmetics: budget-warning once-per-crossing latch, Discord card button disable on finalize.

@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "autostart_on_backlog_approval" boolean DEFAULT false NOT NULL;

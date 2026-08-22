@@ -189,6 +189,11 @@ export default async function ApprovalReviewPage({
         status={approval.status}
         reviewerNotes={approval.reviewerNotes}
         resolvedAt={approval.resolvedAt}
+        approveConsequence={
+          isPrdBacklog && prdPayload?.backlog?.length
+            ? `creates ${prdPayload.backlog.length} tasks`
+            : null
+        }
       />
 
       {/* Body */}

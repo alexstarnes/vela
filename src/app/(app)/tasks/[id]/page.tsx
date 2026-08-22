@@ -108,7 +108,13 @@ export default async function TaskDetailPage({
           >
             {task.status.replace(/_/g, ' ')}
           </span>
-          <TaskStatusControls task={task} agents={agents} />
+          <TaskStatusControls
+            task={task}
+            agents={agents}
+            approveLabel={
+              taskDocuments.some((doc) => doc.key === 'prd') ? 'Accept & close' : undefined
+            }
+          />
         </div>
       </div>
 

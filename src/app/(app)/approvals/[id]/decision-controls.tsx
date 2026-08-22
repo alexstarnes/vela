@@ -12,6 +12,8 @@ interface DecisionControlsProps {
   status: string;
   reviewerNotes: string | null;
   resolvedAt: Date | null;
+  /** What approving actually does — e.g. "creates 21 tasks". Shown on the button. */
+  approveConsequence?: string | null;
 }
 
 export function DecisionControls({
@@ -19,6 +21,7 @@ export function DecisionControls({
   status: initialStatus,
   reviewerNotes: initialReviewerNotes,
   resolvedAt: initialResolvedAt,
+  approveConsequence,
 }: DecisionControlsProps) {
   const router = useRouter();
   const [status, setStatus] = useState(initialStatus);
@@ -108,7 +111,11 @@ export function DecisionControls({
             style={{ background: '#3D8B5C20', color: '#3D8B5C', border: '1px solid #3D8B5C40' }}
           >
             <CheckCircle size={12} />
-            {busy === 'approve' ? 'Approving…' : 'Approve'}
+            {busy === 'approve'
+              ? 'Approving…'
+              : approveConsequence
+                ? `Approve — ${approveConsequence}`
+                : 'Approve'}
           </button>
           <button
             onClick={() => handleDecision('reject')}

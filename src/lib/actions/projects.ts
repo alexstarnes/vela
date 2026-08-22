@@ -70,6 +70,7 @@ const UpdateProjectSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   goal: z.string().trim().max(1000).optional(),
   context: z.string().trim().max(5000).optional(),
+  autostartOnBacklogApproval: z.boolean().optional(),
 });
 
 export type ActionResult<T = void> =
