@@ -29,7 +29,8 @@ export type EventType =
   | 'implementation_audit'
   | 'ring_context'
   | 'ring_findings'
-  | 'ring_reconciliation';
+  | 'ring_reconciliation'
+  | 'document_added';
 
 export interface LogEventParams {
   taskId: string;

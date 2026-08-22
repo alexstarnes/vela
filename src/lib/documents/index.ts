@@ -80,6 +80,37 @@ export async function appendDocumentRevision(params: {
   throw new Error('appendDocumentRevision: unreachable');
 }
 
+export interface TaskDocumentSummary {
+  key: string;
+  latestRevision: number;
+  revisionCount: number;
+  updatedAt: Date;
+}
+
+/** One row per document key on the task, with latest-revision metadata. */
+export async function listTaskDocuments(taskId: string): Promise<TaskDocumentSummary[]> {
+  const rows = await db.query.documents.findMany({
+    where: eq(documents.taskId, taskId),
+    columns: { key: true, revision: true, createdAt: true },
+    orderBy: [desc(documents.revision)],
+  });
+  const byKey = new Map<string, TaskDocumentSummary>();
+  for (const row of rows) {
+    const existing = byKey.get(row.key);
+    if (!existing) {
+      byKey.set(row.key, {
+        key: row.key,
+        latestRevision: row.revision,
+        revisionCount: 1,
+        updatedAt: row.createdAt,
+      });
+    } else {
+      existing.revisionCount += 1;
+    }
+  }
+  return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
 /** Deterministic product-mode check: a task carrying a PRD document. */
 export async function taskHasPrdDocument(taskId: string): Promise<boolean> {
   const row = await db.query.documents.findFirst({

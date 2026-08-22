@@ -9,6 +9,9 @@ import Link from 'next/link';
 import { TaskStatusControls } from './task-status-controls';
 import { TaskMessageInput } from './task-message-input';
 import { ApprovalPanel } from './approval-panel';
+import { AttachDocument } from './attach-document';
+import { ReviewPanel } from './review-panel';
+import { listTaskDocuments } from '@/lib/documents';
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   backlog: { bg: '#6B665A20', fg: '#8E897B' },
@@ -46,6 +49,7 @@ const EVENT_ICONS: Record<string, { icon: string; color: string }> = {
   model_escalation: { icon: '↑', color: '#C27D1A' },
   routing_tuning: { icon: '≋', color: '#6B665A' },
   scorecard: { icon: '∑', color: '#6B665A' },
+  document_added: { icon: '▣', color: '#F5A623' },
 };
 
 export default async function TaskDetailPage({
@@ -55,12 +59,13 @@ export default async function TaskDetailPage({
 }) {
   const { id } = await params;
 
-  const [task, events, subtasks, agents, taskApprovals] = await Promise.all([
+  const [task, events, subtasks, agents, taskApprovals, taskDocuments] = await Promise.all([
     getTask(id),
     getTaskEvents(id),
     getSubtasks(id),
     listAgents(),
     getTaskApprovals(id),
+    listTaskDocuments(id),
   ]);
 
   if (!task) notFound();
@@ -147,6 +152,15 @@ export default async function TaskDetailPage({
         {/* Event thread */}
         <div className="flex-1 flex flex-col min-w-0">
           <div className="flex-1 overflow-auto p-5">
+            {task.status === 'review' && (
+              <ReviewPanel
+                taskId={task.id}
+                documents={taskDocuments}
+                approvals={taskApprovals}
+                events={events}
+                workspacePath={task.project?.workspacePath ?? null}
+              />
+            )}
             {task.description && (
               <div
                 className="mb-4 p-3 rounded-lg text-sm"
@@ -211,7 +225,9 @@ export default async function TaskDetailPage({
                   } else if (event.eventType === 'workflow_route' && payload) {
                     content = `Routed to ${payload.workflow_id ?? 'workflow'}`;
                   } else if (event.eventType === 'mode_selection' && payload) {
-                    content = `Mode ${payload.mode} (score ${payload.score}/8) · effective tier ${payload.effective_tier}`;
+                    content = `Mode ${payload.mode}${payload.score != null ? ` (score ${payload.score}/8)` : ''}${payload.effective_tier != null ? ` · effective tier ${payload.effective_tier}` : ''}`;
+                  } else if (event.eventType === 'document_added' && payload) {
+                    content = `Document '${payload.key}' revision ${payload.revision} attached (${Number(payload.length ?? 0).toLocaleString()} chars)${payload.routes_to_critique_ring ? ' — routes to critique ring' : ''}`;
                   } else if (event.eventType === 'model_escalation' && payload) {
                     content = `Escalated tier ${payload.from_tier} → ${payload.to_tier} after ${payload.failure_count} failure(s)`;
                   } else if (event.eventType === 'repo_map' && payload) {
@@ -353,6 +369,35 @@ export default async function TaskDetailPage({
               </div>
             </div>
           )}
+
+          {/* Documents */}
+          <div>
+            <p
+              className="text-[9px] font-mono uppercase tracking-wider mb-2"
+              style={{ color: 'var(--stone-500)' }}
+            >
+              Documents
+            </p>
+            {taskDocuments.length > 0 && (
+              <div className="space-y-1 mb-2">
+                {taskDocuments.map((doc) => (
+                  <Link
+                    key={doc.key}
+                    href={`/tasks/${task.id}/documents/${doc.key}`}
+                    className="flex items-center gap-1.5 group"
+                  >
+                    <span className="text-[10px] font-mono group-hover:underline" style={{ color: '#F5A623' }}>
+                      {doc.key}
+                    </span>
+                    <span className="text-[9px] font-mono" style={{ color: 'var(--stone-600)' }}>
+                      rev {doc.latestRevision}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            )}
+            <AttachDocument taskId={task.id} />
+          </div>
 
           {/* Pending approvals */}
           <ApprovalPanel approvals={taskApprovals} taskId={task.id} />

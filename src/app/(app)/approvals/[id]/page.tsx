@@ -7,7 +7,7 @@ import { getApproval } from '@/lib/actions/approvals';
 import { listDocumentRevisions } from '@/lib/documents';
 import { MarkdownDocument } from '@/components/document-viewer/markdown-document';
 import { DecisionControls } from './decision-controls';
-import { diffLines, diffCounts, collapseUnchangedRuns, type DiffOp } from './diff';
+import { diffLines, diffCounts, collapseUnchangedRuns, type DiffOp } from '@/lib/documents/diff';
 
 // ─── Payload shapes (from critique-ring-workflow.ts ring-gate step) ──
 
@@ -477,6 +477,7 @@ export default async function ApprovalReviewPage({
                     <MarkdownDocument
                       markdown={revisedDocContent}
                       sourceLabel={`documents key=prd revision=${prdPayload.prd_revision}`}
+                      badgeLabel="Revised PRD"
                     />
                   ) : (
                     <p

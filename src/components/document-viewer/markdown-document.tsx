@@ -213,9 +213,13 @@ function headingClasses(level: 1 | 2 | 3): string {
 export function MarkdownDocument({
   markdown,
   sourceLabel,
+  badgeLabel = 'Protected deep link',
+  descriptionOverride,
 }: {
   markdown: string;
   sourceLabel: string;
+  badgeLabel?: string;
+  descriptionOverride?: string;
 }) {
   const { blocks, toc } = parseMarkdown(markdown);
   const title = blocks.find((block): block is Extract<Block, { type: 'heading' }> => block.type === 'heading' && block.level === 1)?.title ?? sourceLabel;
@@ -232,7 +236,7 @@ export function MarkdownDocument({
         >
           <div className="flex flex-wrap items-center gap-2 mb-6">
             <span className="rounded-full border px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.24em] text-[#F5A623] border-[#F5A62333] bg-[#F5A62312]">
-              Protected deep link
+              {badgeLabel}
             </span>
             <span className="rounded-full border px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.24em] text-[#B8B4A8] border-white/10 bg-white/4">
               Markdown preview
@@ -244,7 +248,11 @@ export function MarkdownDocument({
           </h1>
 
           <p className="mt-4 max-w-3xl text-sm md:text-base leading-7 text-[#B8B4A8]">
-            Rendered directly from <span className="font-mono text-[#ECEAE4]">{sourceLabel}</span> for a richer document view without adding it to primary navigation.
+            {descriptionOverride ?? (
+              <>
+                Rendered directly from <span className="font-mono text-[#ECEAE4]">{sourceLabel}</span> for a richer document view without adding it to primary navigation.
+              </>
+            )}
           </p>
         </div>
 

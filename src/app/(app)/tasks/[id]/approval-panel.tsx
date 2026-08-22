@@ -26,8 +26,9 @@ export function ApprovalPanel({ approvals: initialApprovals, taskId }: ApprovalP
   const router = useRouter();
 
   const pending = approvalsList.filter((a) => a.status === 'pending');
+  const resolved = approvalsList.filter((a) => a.status !== 'pending');
 
-  if (pending.length === 0) return null;
+  if (pending.length === 0 && resolved.length === 0) return null;
 
   async function handleApprove(approvalId: string) {
     setBusy(approvalId);
@@ -61,7 +62,7 @@ export function ApprovalPanel({ approvals: initialApprovals, taskId }: ApprovalP
         className="text-[9px] font-mono uppercase tracking-wider mb-2"
         style={{ color: 'var(--stone-500)' }}
       >
-        Pending Approvals
+        {pending.length > 0 ? 'Pending Approvals' : 'Approvals'}
       </p>
       {pending.map((approval) => {
         const payload = approval.payload as Record<string, unknown> | null;
@@ -115,6 +116,24 @@ export function ApprovalPanel({ approvals: initialApprovals, taskId }: ApprovalP
           </div>
         );
       })}
+      {resolved.map((approval) => (
+        <Link
+          key={approval.id}
+          href={`/approvals/${approval.id}`}
+          className="flex items-center gap-1.5 group"
+        >
+          <span
+            className="w-1.5 h-1.5 rounded-full shrink-0"
+            style={{ background: approval.status === 'approved' ? '#3D8B5C' : '#C4413A' }}
+          />
+          <span
+            className="text-[10px] group-hover:underline min-w-0 truncate"
+            style={{ color: 'var(--stone-400)' }}
+          >
+            {approval.actionType.replace(/_/g, ' ')} · {approval.status}
+          </span>
+        </Link>
+      ))}
     </div>
   );
 }
