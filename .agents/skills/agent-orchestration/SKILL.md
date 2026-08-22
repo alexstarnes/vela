@@ -16,6 +16,9 @@ metadata:
 
 # Agent Orchestration
 
+> Individual role definitions live in `docs/agent-roles/` (canonical); this skill carries the roster
+> and routing, not the role bodies.
+
 A harness-first orchestration system for multi-agent software development. This skill defines **who** does **what** work, at **which** model tier, during **which** project phase -- and how agents hand off, escalate, and verify their work.
 
 Grounded in harness engineering principles from OpenAI (Feb 2026), Anthropic's workflow patterns (Mar 2026), and Cursor's subagent architecture.
@@ -221,22 +224,22 @@ Load the reference doc for a role when that agent is activated. Each doc contain
 
 | Task Type | Load This Reference | Agent |
 |-----------|-------------------|-------|
-| Task routing, agent selection, phase management | [orchestrator.md](references/orchestrator.md) | Orchestrator |
-| Requirements, user stories, prioritization, acceptance criteria | [product-strategist.md](references/product-strategist.md) | Product Strategist |
-| UI/UX design, design systems, wireframes, accessibility | [ux-designer.md](references/ux-designer.md) | UX Designer |
-| System design, API design, tech decisions, dependency planning | [architect.md](references/architect.md) | Architect |
-| Schema design, migrations, query optimization, data modeling | [database-engineer.md](references/database-engineer.md) | Database Engineer |
-| UI components, state management, styling, client-side logic | [frontend-engineer.md](references/frontend-engineer.md) | Frontend Engineer |
-| APIs, business logic, server-side integrations, auth flows | [backend-engineer.md](references/backend-engineer.md) | Backend Engineer |
-| Cross-stack features, full vertical slices | [fullstack-implementer.md](references/fullstack-implementer.md) | Fullstack Implementer |
-| Agent implementation, prompt engineering, tools, RAG, MCP | [ai-engineer.md](references/ai-engineer.md) | AI/Agent Engineer |
-| Code correctness, patterns, maintainability, style | [code-reviewer.md](references/code-reviewer.md) | Code Reviewer |
-| Test strategy, test writing, coverage analysis, automation | [qa-engineer.md](references/qa-engineer.md) | QA Engineer |
-| Vulnerabilities, auth patterns, secrets, dependency audits | [security-auditor.md](references/security-auditor.md) | Security Auditor |
-| Profiling, optimization, bundle analysis, load testing | [performance-engineer.md](references/performance-engineer.md) | Performance Engineer |
-| CI/CD, deployment, containers, monitoring, infrastructure | [devops-engineer.md](references/devops-engineer.md) | DevOps Engineer |
-| Technical docs, API docs, user guides, changelogs | [technical-writer.md](references/technical-writer.md) | Technical Writer |
-| Data pipelines, analytics, metrics, dashboards | [data-analyst.md](references/data-analyst.md) | Data Analyst |
+| Task routing, agent selection, phase management | [orchestrator.md](docs/agent-roles/orchestrator.md) | Orchestrator |
+| Requirements, user stories, prioritization, acceptance criteria | [product-strategist.md](docs/agent-roles/product-strategist.md) | Product Strategist |
+| UI/UX design, design systems, wireframes, accessibility | [ux-designer.md](docs/agent-roles/ux-designer.md) | UX Designer |
+| System design, API design, tech decisions, dependency planning | [architect.md](docs/agent-roles/architect.md) | Architect |
+| Schema design, migrations, query optimization, data modeling | [database-engineer.md](docs/agent-roles/database-engineer.md) | Database Engineer |
+| UI components, state management, styling, client-side logic | [frontend-engineer.md](docs/agent-roles/frontend-engineer.md) | Frontend Engineer |
+| APIs, business logic, server-side integrations, auth flows | [backend-engineer.md](docs/agent-roles/backend-engineer.md) | Backend Engineer |
+| Cross-stack features, full vertical slices | [fullstack-implementer.md](docs/agent-roles/fullstack-implementer.md) | Fullstack Implementer |
+| Agent implementation, prompt engineering, tools, RAG, MCP | [ai-engineer.md](docs/agent-roles/ai-engineer.md) | AI/Agent Engineer |
+| Code correctness, patterns, maintainability, style | [code-reviewer.md](docs/agent-roles/code-reviewer.md) | Code Reviewer |
+| Test strategy, test writing, coverage analysis, automation | [qa-engineer.md](docs/agent-roles/qa-engineer.md) | QA Engineer |
+| Vulnerabilities, auth patterns, secrets, dependency audits | [security-auditor.md](docs/agent-roles/security-auditor.md) | Security Auditor |
+| Profiling, optimization, bundle analysis, load testing | [performance-engineer.md](docs/agent-roles/performance-engineer.md) | Performance Engineer |
+| CI/CD, deployment, containers, monitoring, infrastructure | [devops-engineer.md](docs/agent-roles/devops-engineer.md) | DevOps Engineer |
+| Technical docs, API docs, user guides, changelogs | [technical-writer.md](docs/agent-roles/technical-writer.md) | Technical Writer |
+| Data pipelines, analytics, metrics, dashboards | [data-analyst.md](docs/agent-roles/data-analyst.md) | Data Analyst |
 
 ## Quality Gate Definitions
 

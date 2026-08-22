@@ -1,5 +1,5 @@
 /**
- * Agent-orchestration skill reference markdown on disk (`.agents/skills/.../references/*.md`).
+ * Agent-orchestration role reference markdown on disk (`docs/agent-roles/*.md`).
  * Used by seed (fenced system prompt → DB) and agent-factory (full playbook at runtime).
  */
 
@@ -27,7 +27,7 @@ export const AGENT_ORCHESTRATION_REF_FILE_BY_NAME: Record<string, string> = {
 };
 
 export function orchestrationReferencesDir(): string {
-  return path.join(process.cwd(), '.agents/skills/agent-orchestration/references');
+  return path.join(process.cwd(), 'docs/agent-roles');
 }
 
 /** Full reference markdown, or null if unmapped / file missing (e.g. deploy without `.agents`). */
