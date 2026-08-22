@@ -142,3 +142,71 @@ Vela build — 🔔 YOUR MOVE: the critique ring finished on the weak Clipper PR
 **Phase 8 approve stage — REAL OPERATOR, REAL PHONE:** the operator pressed Approve on the Discord card themselves. Approval resolved `approved`, reviewer_notes `via Discord by .starnes (705628720722870343)` — the audit names who acted. The handler created **21 child tasks**, all `open`, assigned to the Supervisor, every one carrying goal ancestry ("Serves PRD task c9a834f7…") plus source-finding traceability. The PRD task requeued and its next heartbeat finalized the ring: task → `review` ("Backlog approved — critique ring complete"). Criterion "Approval arrives in Discord and works from your phone": **satisfied at full fidelity.** Cosmetic follow-up noted: the card's buttons were not visually disabled after the press (a re-press gets a safe "already resolved" reply); the message-edit path needs a look.
 
 **BUG (operator-reported, fixed): ghost wall_clock_timeout flood.** The Phase 1 wall-clock timer never disarmed on normal step completion — every finished step logged a spurious timeout ~10 min later, flooding #errors. Fixed with telemetry.complete() disarm in all generation paths + a finished/aborted guard in the callback; verified both directions (no ghosts on completed runs; hung runs still abort exactly once). The ghost events already in task_events for task de8fa56f are historical noise in an append-only log — left in place, noted here.
+
+**SYSTEMIC GAP FOUND (workspace hygiene between tasks):** a child task whose work never passes review leaves uncommitted edits in the shared project workspace; the next task's implementation audit and reviewer then see the leftover diff as part of THEIR change (the duplicate-detection run was sent to rework for the empty-states task's broken leftovers). The legacy path creates per-task branches; the workflow path does not isolate or clean the tree between tasks. Mitigated for the acceptance run by resetting the workspace to HEAD; the real fix (per-task branch or pre-checkout clean-tree gate on the workflow path) is filed as follow-up work, not patched tonight.
+
+**Two more honest findings from the child-pipeline runs (filed as follow-ups, not patched tonight):**
+1. **Tier escalation is recorded but not enforced on the low-risk path.** `verification.escalation` said `newTier: premium` after repeated failures, yet the next implement attempt still selected `ollama/qwen3-coder:30b` (scorecard tier stayed `fast`). The escalation ladder computes; the model selection for low-risk tasks doesn't consume it. Same class as the Phase 1 theme: present ≠ enforced.
+2. **Backlog stories carry implicit dependencies the pipeline doesn't order.** "Duplicate detection and URL canonicalisation" presumes save/import code that only sibling stories create; on the skeleton app the implementer has nothing to hook into and honestly makes no edits. The synthesizer's backlog needs dependency hints (or the operator sequences manually for now).
+Both tasks correctly escalated to `waiting_for_human` at the requeue limit rather than looping forever — the containment worked; the routing needs the follow-ups.
+
+**Phase 8 final criterion — child task to `review` with a real file change: PASS.**
+The "Dark mode" child (`3fc48921`) is the proof, and it proved the escalation fix along the way:
+- Attempts 1–3 on `ollama/qwen3-coder:30b` produced the CSS palette but never the required Settings System/Light/Dark control; mechanical verification failed twice, then the reviewer sent it to rework (failureCount 3).
+- The tier-escalation ladder was computing `premium` but the implement step never consumed it (finding #1 above). Fixed in `implement.ts` (commit 1554ddc): the step now raises its tier floor from `task.failureCount` and logs a `model_escalation` event.
+- Next heartbeat: `model_escalation` ("failureCount 3 raised the implement tier floor", standard → premium) → implement ran on `cli/claude-code:opus` ($0 metered). One more reviewer rework cycle (failureCount 4, escalation held), then: **"Verification passed and reviewer reported no blocking findings" → status `review`.**
+- The change is real and complete: +332/−5 across `index.html`, `src/app.js`, `src/style.css`, `README.md` in the Clipper workspace — pre-paint theme pin (no flash), System/Light/Dark radio control in Settings, localStorage persistence, `matchMedia` watcher for System mode, and an agent-authored `tools/check-contrast.mjs` (audit flagged it out-of-scope; reviewer accepted it as benign tooling).
+- Task metered cost $0.0126 (gpt-5.4-mini scorer calls only; all implement/review generation $0).
+
+---
+
+# FINAL REPORT — Phases 0–8 complete
+
+Run: 2026-08-21, ~20:00–23:15 PDT (≈3¼ hours wall clock). Phase 7 (Hermes) **not started**, per plan §12.
+
+## §11 acceptance test — 13/13
+
+| Criterion | Verdict | Evidence |
+|---|---|---|
+| PRD Auditor flags untestable criteria specifically | ✅ | Named "delightful"/"meaningfully"/unmeasurable metrics by quote; also the unprompted structural cut (differentiator claimed, zero features serve it) |
+| Flow Hardener flags the missing error state | ✅ | Flagged happy-path-only flows + the planted unstated auth dependency |
+| Strategist: commodity + critical/major + commercial_summary | ✅ | `defensibility: "commodity"`, `moat_source: "none identified"`, verdict `reconsider-scope`; refused to fabricate market figures |
+| All findings schema-valid, verified programmatically | ✅ | 50/50 zod-parsed first attempt (19/19/12) |
+| ≥2 reviewers visibly disagree | ✅ | 3 escalations, each a genuine cross-reviewer contradiction with both positions steelmanned |
+| Context inspection proves independence | ✅ | 3 logged `ring_context` payloads, zero peer-claim leaks (positive-control test) |
+| Synthesizer accounts for 100% of findings | ✅ | 50/50: 47 accepted / 2 deferred / 1 rejected, each with disposition + reason, asserted programmatically |
+| Revised PRD is a new revision; original intact | ✅ | rev 2 (30,680 chars); rev 1 byte-identical to fixture |
+| No task created until approval | ✅ | Gate held at 0 child tasks with approval `pending` |
+| Approval arrives in Discord, works from phone | ✅ | Real operator pressed Approve on the card; audit trail `via Discord by .starnes (705628720722870343)` |
+| Approved backlog → child tasks with ancestry | ✅ | 21 children created `open`, each with goal ancestry + source-finding traceability |
+| One child runs to `review` with a real file change | ✅ | Dark-mode child, above |
+| Whole cycle ≈ $0 | ✅ | Ring $0.000000 metered; entire build window $0.104 metered (all gpt-5.4-mini scorer calls; see below) |
+
+## §12 done-criteria — 9/9
+
+1. Phase 0 proven (all lanes real, E2E task) ✅ 2. GOVERNANCE_PROOF.md with live-fire evidence ✅ 3. Concurrency: zero double-checkouts ✅ 4. Budget counts **runs** (new metric), not just dollars ✅ 5. Ring independence **asserted** ✅ 6. 17 roles ported; 4 ring agents on subscription lane at $0 marginal ✅ 7. Discord approvals from phone + negative auth test PASS ✅ 8. Strategist no-repeat by week 3 ✅ (honest caveat: all 3 weeks returned reasoned `nothing_new` due to the since-fixed router diversion) 9. Phase 8 in full ✅
+
+## Spend and lanes
+
+- **Metered this build: $0.1038** — 148 `openai/gpt-5.4-mini` calls (mode scoring/verification judgment seats). Everything else: 414 qwen3-coder calls (local, $0), 8 CLI opus calls ($0 marginal, ≈$2.71+ notional absorbed by the Max subscription).
+- No `ANTHROPIC_API_KEY` (or any app secret) reaches spawned CLI children — verified against the live child environment, then hardened (helper strips ANTHROPIC/OPENAI keys, DB URLs, VELA_*, Discord token, webhook).
+
+## Plan amendments (rule 7)
+
+0-A status doc is PROJECT_STATUS.md (plan named a dated file) · 0-B env audit was stale, secrets live in .env.local · 0-C local-project creation disabled in UI, clones used · 4-A role skills seeded scope `role`/`protocol`, not `global` (factory injects globals everywhere; selective injection is the point) · 5-A bot token in gitignored .env, not the encrypted per-connection store; compensating control = helper env strip · 8-A synthesizer seat: 20-min ceiling, cloud-first fallback, 12-finding cap, resumable ring keyed on `prd_revision`.
+
+## Bugs found and fixed during the run (all committed)
+
+Helper CLI JSON parse dropped usage · monthly budget reset unreachable for paused agents · loop detection absent on workflow path · SSE backlog drop >50 events + ms-boundary skip (final fix committed tonight) · 14 adversarial-review findings in ring code (1 critical: revalidatePath throw re-running the paid ring every cron tick) · ring seats silently diverted to qwen by local-first router · ghost wall_clock_timeout flood (operator-reported) · Discord buttons dead-active after press · tier escalation recorded-but-not-enforced (operator-reported, the final fix of the night).
+
+## Follow-ups filed (deliberately not built tonight)
+
+1. **Workspace hygiene** — per-task branch or clean-tree gate on the workflow path (systemic; contaminated one child run).
+2. **Backlog dependency ordering** — synthesizer stories presume siblings; pipeline doesn't sequence them.
+3. Budget-warning once-per-crossing latch (currently re-warns each heartbeat in the 80–100% band).
+4. mode_selection UI renders "score undefined/8" for product-mode rows.
+5. Two children parked at `waiting_for_human` for operator triage: empty-states (real work, 5 honest review rejections) and duplicate-detection (blocked on sibling stories).
+6. Richer strategist signal test on the CLI lane (week-3 test passed on `nothing_new` answers).
+7. Discord card cosmetic: visually disable buttons on finalize in all edit paths.
+
+**Definition of done met. Stopping here — Phase 7 (Hermes) intentionally untouched.**

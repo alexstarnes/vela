@@ -190,3 +190,67 @@ not an enforcement gap).
   $0.5000 / 50 runs.
 - `loop-tracker-isolation`: 20 interleaved trackers, each throws on exactly
   its own 3rd identical signature.
+
+## 4a. Loop detection evidence (real workflow-path run)
+
+Task engineered to repeat `search_workspace {"query":"ZZGOVLOOP_SENTINEL_STRING"}`;
+the model complied and the tracker fired on the 3rd identical call:
+
+```json
+"loop_detected": {
+  "workflow_step_id": "implement-task", "iteration": 3,
+  "tool_name": "search_workspace",
+  "input": { "query": "ZZGOVLOOP_SENTINEL_STRING" },
+  "signature": "search_workspace:c4df0038f6fba924", "count": 3,
+  "message": "Loop detected: tool call \"search_workspace:c4df0038f6fba924\" repeated 3 times in a single heartbeat run"
+},
+"status_changes": [{ "to": "blocked", "from": "in_progress", "reason": "Loop detected" }],
+"agent_status_after": "paused",
+"resume": {
+  "agent_status_after_activate": "active",
+  "audit_rows": ["Operator reactivated agent \"Supervisor\" from status \"paused\""],
+  "resume_probe_status": "review", "resume_probe_ran": true
+}
+```
+
+**PASS**: SHA-256 tracker fired at threshold, task → blocked, agent paused,
+`loop_detected` carries tool+input+signature for diagnosis, and manual resume
+(unblock + reactivate, audit-logged) restored normal runs.
+
+## 5a. Containment evidence
+
+```json
+"max_iterations": { "cap": 2, "max_iteration_seen_per_step": { "implement-task": 2 }, "terminated_without_hang": true },
+"wall_clock": { "ceiling_ms": 1500, "aborted": true, "elapsed_ms": 1501,
+  "timeout_events": [{ "kind": "wall_clock_timeout", "limit_ms": 1500, "workflow_step_id": "containment-wallclock-probe" }] },
+"cli_child_lifetime": { "error_kind": "timeout", "result_snippet": "CLI execution timed out after 1500ms", "orphan_processes_after": "none" }
+```
+
+**All three PASS.** (First containment run exposed an exercise flaw, not a code
+flaw: each step enforces its own agent's maxIterations, so the cap must be set
+on every runtime agent — rerun with all-agent caps stopped implement at exactly 2.)
+
+## 6a. Stale-lock recovery after a real kill
+
+Dev server killed with SIGKILL mid-run; task verified stuck
+(`in_progress`, `locked_by` set); lock aged past the 10-minute threshold
+(clock-fake only — the kill was real); server restarted; scheduler cron
+released it:
+
+```json
+"stale-lock-after-kill": { "status": "in_progress", "locked_by": "b7ab38c4-…", "stuck": true }
+"stale-lock-recovered":  { "status": "open", "locked_by": null, "locked_at": null }
+```
+
+**PASS** — a killed process leaves no permanently locked task.
+
+---
+
+# Verdict
+
+Budget enforcement (both metrics), loop detection (on the real workflow
+path), containment ceilings, and crash recovery are **enforced, exercised,
+and evidenced** — not merely present. Three real defects were found by these
+exercises and fixed: the unreachable monthly reset, the missing workflow-path
+loop detection + agent pause, and the SSE backlog drop (plus its
+millisecond-boundary duplicate).

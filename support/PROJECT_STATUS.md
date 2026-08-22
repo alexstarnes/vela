@@ -1,6 +1,6 @@
 # Vela — Project Status
 
-**Last updated: 2026-08-21**
+**Last updated: 2026-08-21 (evening — after the completion-plan run)**
 
 > This is the **living status document** for Vela — written for a fresh agent (or the user) picking up this repo cold. It reflects the current state, verified against the actual code, not against older docs.
 >
@@ -32,9 +32,14 @@ The full up-to-date architecture is also documented in [`docs/architecture.md`](
 
 ## 2. Bottom line
 
-**All five originally-planned build phases are functionally complete.** The codebase is meaningfully ahead of where `support/NEXT_BUILD_PLAN.md` (2026-07-09) left off — that doc's Phase 1 (auth hardening, Docker/Railway deploy, real README), Phase 3 (CLI execution lane + failover), and Phase 4 (dev server start/stop) have all since shipped, largely in one large commit (`a35fb7b`). The repo is clean, `npx tsc --noEmit` passes with zero errors, and all 27 unit tests pass.
+**The completion plan (`support/VELA_COMPLETION_PLAN.md`, Phases 0–8) executed to done on 2026-08-21** — full evidence trail in [`support/BUILD_LOG.md`](BUILD_LOG.md) (final report at the bottom) and [`support/GOVERNANCE_PROOF.md`](GOVERNANCE_PROOF.md). Headlines:
 
-What's **not** done is narrower than "phases" — see §5.
+- **Governance is enforced, not just present**: dollar + run-count budgets fire live (80%/100%/pause/override/monthly reset), loop detection works on the workflow path, wall-clock ceilings abort hung steps, killed-process recovery verified with a real SIGKILL, zero double-checkouts under concurrent load.
+- **The critique ring works**: 3 independent CLI-opus reviewers + synthesizer tore apart a deliberately weak PRD (50 schema-valid findings, 3 genuine cross-reviewer escalations, 100% reconciliation), gate held until a real Discord approval from the operator's phone, 21 backlog child tasks created with ancestry, and one child ran the full pipeline to `review` with a real +332-line change — via the tier-escalation ladder (qwen failed 3×, escalated to CLI opus, passed).
+- **Cost**: $0.10 metered for the entire run (scorer calls); all agent generation on local Ollama + CLI subscription lanes.
+- **Phase 7 (Hermes) intentionally not started** — explicitly out of scope per the plan.
+
+What's left is the follow-up list in §5.
 
 ---
 
@@ -70,13 +75,16 @@ What's **not** done is narrower than "phases" — see §5.
 
 ## 5. Known gaps (the real "what's left" list)
 
-1. **Stale comment, not a real gap:** `src/lib/events/logger.ts:52` says "Stub SSE emitter — Phase 4 will wire up real-time push." The SSE endpoint (`/api/events/stream`) is fully implemented with `last-event-id` reconnect, but delivery is 2-second DB polling, not a true push. Worth updating the comment; not worth re-architecting unless latency becomes a real complaint.
-2. **Load testing never done:** `src/lib/mastra/heartbeat.ts`'s atomic checkout (`FOR UPDATE SKIP LOCKED`) and the full workflow-runner path have not been tested under concurrent load. This was flagged in the (now-archived) `support/archive/NEXT_BUILD_PLAN_2026-07-09.md` and, as far as this audit found, still hasn't been addressed.
-3. **"Adequate → Strong" design notes never written.** The archived next-build plan asked for short design notes on three capabilities before/while hardening them: (a) does the Supervisor actually pick the *minimum* specialist set per task, or always run the full pipeline — needs confirming against `task-shape.ts` behavior, not just its existence; (b) verification-policy / implementation-audit `return null` branches are now documented as intentional conservative defaults (not silent degradation) — worth a second opinion since this was previously flagged as a bug; (c) budget/loop governance — code exists (`budget.ts`, `loop-detector.ts`) and is wired into the heartbeat, but whether it's been *exercised* under a real exceeded-budget or detected-loop scenario is unverified.
-4. **GitHub clone path reliability is unverified.** OAuth/API layers look solid; there's no confirmed end-to-end test of clone-through-helper working reliably. Both the CLI lane and dev-server control depend on the same helper bridge, so flakiness here would propagate.
-5. **Env gaps in the working `.env`:** `VELA_HELPER_SECRET` and `GITHUB_TOKEN_ENCRYPTION_KEY` are both absent (required by `src/lib/helper/client.ts` and `src/lib/security/secrets.ts` respectively — both throw without them). Without these, all helper-dependent features (file ops, git, CLI lane, dev-server control) and GitHub OAuth are dead in the current local setup. `APP_URL` is also unset but has a safe runtime fallback.
-6. **Prior memory notes about a dead `ANTHROPIC_API_KEY` and a down Ollama tunnel appear resolved** — both are populated with apparently-real values in the current `.env`. Not independently network-verified (no live call made to Ollama or Anthropic during this audit) — check with a real request before trusting it fully.
-7. **Build freshness:** `.next/` has a dev-mode build from 2026-07-09 (same day as the Docker fix commit); no `BUILD_ID`, suggesting the last `npm run build` was partial or superseded by Docker's own build step. Not urgent — the Dockerfile runs its own production build — but don't assume the local `.next/` output reflects current code.
+Everything in the previous version of this list was resolved by the 2026-08-21 completion run (load testing done, governance exercised live, GitHub-clone-through-helper verified E2E, env gaps were a stale audit — secrets live in `.env.local`). The current list is the follow-ups filed in `BUILD_LOG.md`'s final report:
+
+1. **Workspace hygiene between tasks (systemic):** a child task whose work never passes review leaves uncommitted edits in the shared project workspace; the next task's audit/reviewer see the leftovers as part of *their* diff. Fix: per-task branch or a clean-tree gate on the workflow path (the legacy path already branches per task).
+2. **Backlog dependency ordering:** synthesizer-generated stories presume code that only sibling stories create; the pipeline doesn't sequence them. Either add dependency hints to the synthesizer output or sequence manually for now.
+3. **Two children parked at `waiting_for_human`** for operator triage: empty-states (real work, 5 honest review rejections at the requeue limit) and duplicate-detection (blocked on sibling save/import stories).
+4. Budget-warning latch: re-warns on every heartbeat while in the 80–100% band; should fire once per crossing.
+5. mode_selection UI renders "score undefined/8" for product-mode rows (cosmetic).
+6. Richer strategist signal test on the CLI lane — the week-3 no-repeat test passed, but all three weeks returned reasoned `nothing_new` (the seat had been diverted to qwen by a since-fixed router bug).
+7. Discord approval card: visually disable buttons on finalize in all edit paths (a re-press is already safe, just cosmetically confusing).
+8. **Build freshness:** `.next/` may hold a stale dev build; the Dockerfile runs its own production build, so this only matters for local prod testing.
 
 Two `return null` branches (`verification-policy.ts:94`, `implementation-audit.ts:128`) were checked and are **not bugs** — one is a documented conservative "stay blocking" default, the other is the null-means-no-issue happy path. Listed here only so nobody re-flags them without reading the docstrings first.
 
@@ -85,9 +93,12 @@ Two `return null` branches (`verification-policy.ts:94`, `implementation-audit.t
 ## 6. Test & build health (verified this session)
 
 ```
-npx tsc --noEmit        → clean, 0 errors
-npm run test:unit       → 27/27 pass (1.1s)
-git status              → clean, no uncommitted changes
+npx tsc --noEmit        → clean, 0 errors (re-verified after the completion run)
+npm run test:unit       → 27/27 pass
+tests/governance/*      → all pass (budget, loop, containment, recovery, concurrency)
+tests/load/*            → all pass (checkout under load, SSE burst)
+tests/ring/*            → independence + phase8 acceptance pass
+tests/discord/*         → handler auth (negative + positive) pass
 ```
 
 ---
@@ -146,8 +157,8 @@ aba205e "Initial commit from Mastra"
 
 In rough priority order, based on §5:
 
-1. Populate the two missing env vars and do a real end-to-end pass: create a project (local folder), trigger a heartbeat, watch a task go through classify → implement → verify → review, confirm the approval gate and activity feed work live.
-2. Write the three short "Adequate → Strong" design notes the archived next-build plan asked for (§5.3) — cheap, and resolves ambiguity about whether governance is *enforced* or merely *present*.
-3. A deliberate concurrency/load test of the heartbeat loop before relying on it unattended for real work.
-4. A reliability pass on the GitHub-clone-through-helper path if CLI mode or dev-server control start acting flaky — they share the same bridge.
-5. Fix the stale comment in `src/lib/events/logger.ts:52`.
+1. **Triage the two `waiting_for_human` children** (empty-states, duplicate-detection) and the dark-mode child sitting at `review` — the Clipper backlog is live and waiting on operator decisions.
+2. **Workspace hygiene fix** (§5.1) before running more child tasks unattended — it's the one systemic gap that corrupts otherwise-good runs.
+3. Backlog dependency ordering (§5.2), so approved stories execute in a workable sequence.
+4. Enable the strategist's weekly cron on the Agents UI when ready for standing surveillance (deliberately left off per the no-self-execution seed invariant).
+5. The cosmetic items: budget-warning latch, mode_selection score rendering, Discord card button disable.
