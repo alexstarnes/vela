@@ -30,6 +30,7 @@ import {
   extractLikelyFilesFromText,
 } from '@/lib/orchestration/implementation-audit';
 import { tierRank, normalizeTier, type ExecutionTier } from '@/lib/orchestration/model-selection';
+import { escalateTierFromFailureCount } from '@/lib/orchestration/escalation';
 import {
   getTaskExecutionPolicy,
   normalizeRelativePath,
@@ -705,6 +706,36 @@ Constraints:
       implementer.maxIterations ?? executionPolicy.maxSteps.implement,
       executionPolicy.maxSteps.implement,
     );
+
+    // ENFORCE tier escalation, don't just record it: a task that keeps
+    // failing raises the implement floor (2 failures → one tier up,
+    // 4 → premium), which routes the attempt to a stronger lane — the CLI
+    // subscription seat for premium — instead of re-feeding the same local
+    // model that already failed.
+    const policyFloor = executionPolicy.stepTierFloors.implement;
+    const escalatedFloor = escalateTierFromFailureCount(
+      policyFloor ?? 'standard',
+      task.failureCount,
+    );
+    const implementTierFloor: ExecutionTier =
+      policyFloor && tierRank(policyFloor) > tierRank(escalatedFloor)
+        ? policyFloor
+        : escalatedFloor;
+    if (implementTierFloor !== (policyFloor ?? 'standard')) {
+      await logTaskEvent({
+        taskId: task.id,
+        agentId: implementer.id,
+        eventType: 'model_escalation',
+        payload: {
+          workflow_step_id: 'implement-task',
+          from_tier: policyFloor ?? 'standard',
+          to_tier: implementTierFloor,
+          failure_count: task.failureCount,
+          reason: `failureCount ${task.failureCount} raised the implement tier floor`,
+        },
+      });
+    }
+
     let generation = await generateImplementationWithFallback({
       implementer,
       task,
@@ -714,7 +745,7 @@ Constraints:
       maxSteps,
       maxOutputTokens: executionPolicy.maxOutputTokens.implement,
       executionPolicy,
-      stepTierFloor: executionPolicy.stepTierFloors.implement,
+      stepTierFloor: implementTierFloor,
     });
     let responseText = generation.responseText;
 
@@ -781,7 +812,7 @@ Constraints:
         maxSteps: Math.min(maxSteps, 6),
         maxOutputTokens: executionPolicy.maxOutputTokens.implement,
         executionPolicy,
-        stepTierFloor: executionPolicy.stepTierFloors.implement,
+        stepTierFloor: implementTierFloor,
         // The retry is a directive, not an exploration — keep it deterministic.
         temperature: 0.1,
       });
