@@ -31,6 +31,7 @@ import {
   setCliLaneCooldown,
 } from '@/lib/orchestration/cli-lane';
 import { resolveModel } from '@/lib/mastra/router';
+import { estimateCostUsd, getModelCostRates } from '@/lib/mastra/costs';
 
 // ─── Output contracts ─────────────────────────────────────────────
 
@@ -280,25 +281,62 @@ export function contextSha256(context: string): string {
 
 // ─── JSON extraction ──────────────────────────────────────────────
 
-export function extractJsonBlock(text: string): unknown {
-  const fenced = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)];
-  const candidates = fenced.length > 0 ? fenced.map((match) => match[1]) : [text];
-  // Prefer the last parseable candidate (models sometimes emit a draft first).
-  for (const candidate of candidates.reverse()) {
-    try {
-      return JSON.parse(candidate.trim());
-    } catch {
-      // keep scanning
+/**
+ * Extract the balanced JSON object starting at `start`. String- and
+ * escape-aware, so fences or braces INSIDE JSON strings (e.g. a revised PRD
+ * containing markdown code blocks) never truncate the candidate — the failure
+ * mode of naive ```-to-``` regex matching.
+ */
+function extractBalancedObject(text: string, start: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
     }
   }
-  // Last resort: first { … last } of the whole text.
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start !== -1 && end > start) {
+  return null;
+}
+
+export function extractJsonBlock(text: string): unknown {
+  try {
+    return JSON.parse(text.trim());
+  } catch {
+    // Not bare JSON — scan for candidates.
+  }
+
+  // Candidate starts: the first '{' after each ```json (or bare ```) fence
+  // opening, latest first (models sometimes emit a draft before the final
+  // block), then the first '{' in the whole text as a last resort.
+  const starts: number[] = [];
+  const fenceRe = /```(?:json)?\s*\n/g;
+  let match: RegExpExecArray | null;
+  while ((match = fenceRe.exec(text)) !== null) {
+    const braceIdx = text.indexOf('{', match.index + match[0].length);
+    if (braceIdx !== -1) starts.push(braceIdx);
+  }
+  starts.reverse();
+  const firstBrace = text.indexOf('{');
+  if (firstBrace !== -1 && !starts.includes(firstBrace)) starts.push(firstBrace);
+
+  for (const start of starts) {
+    const candidate = extractBalancedObject(text, start);
+    if (!candidate) continue;
     try {
-      return JSON.parse(text.slice(start, end + 1));
+      return JSON.parse(candidate);
     } catch {
-      // fall through
+      // keep scanning
     }
   }
   throw new Error('No parseable JSON block found in model output');
@@ -328,13 +366,23 @@ export async function invokeRingSeat(params: {
   taskId: string;
   stepId: string;
 }): Promise<RingSeatResult> {
-  const resolved = await resolveModel(params.agentRow.modelConfigId, params.taskId, params.agentRow.id);
+  // Judgment seats are pinned to their configured lane (the CLI subscription
+  // lane per the plan) — the router's local-first preference must not divert
+  // them to a small local model. The router is only consulted for fallback.
+  const configured = params.agentRow.modelConfigId
+    ? await db.query.modelConfigs.findFirst({
+        where: eq(modelConfigs.id, params.agentRow.modelConfigId),
+      })
+    : null;
 
-  if (resolved.provider === 'cli') {
-    const cliModelId = resolved.resolvedModelId.split('/')[1] ?? 'claude-code';
+  let attemptedCli = false;
+  if (configured?.provider === 'cli' && configured.isAvailable) {
+    attemptedCli = true;
+    const cliModelId = configured.modelId;
     const cli = cliNameForModelId(cliModelId);
+    let result: Awaited<ReturnType<typeof executeCliTask>> | null = null;
     try {
-      const result = await executeCliTask({
+      result = await executeCliTask({
         // No workspacePath: the helper runs the CLI in its empty sandbox.
         cli,
         prompt: params.prompt,
@@ -344,25 +392,38 @@ export async function invokeRingSeat(params: {
         allowedTools: [],
         permissionMode: 'default',
       });
+    } catch (error) {
+      // Only a genuine bridge/transport failure opens the lane cooldown — a
+      // DB hiccup while logging must never discard a successful CLI result.
+      setCliLaneCooldown(cli);
+      console.warn(
+        `[ring] CLI bridge unavailable for ${params.agentRow.name}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
-      await logTaskEvent({
-        taskId: params.taskId,
-        agentId: params.agentRow.id,
-        eventType: 'model_call',
-        payload: {
-          workflow_step_id: params.stepId,
-          model: `cli/${cliModelId}`,
-          lane: 'cli',
-          total_tokens: result.usage?.totalTokens ?? 0,
-          total_cost_usd: '0.000000',
-          reported_cost_usd: result.reportedCostUsd,
-          num_turns: result.numTurns,
-          duration_ms: result.durationMs,
-          error_kind: result.errorKind,
-        },
-        tokensUsed: result.usage?.totalTokens ?? 0,
-        costUsd: '0.000000',
-      });
+    if (result) {
+      try {
+        await logTaskEvent({
+          taskId: params.taskId,
+          agentId: params.agentRow.id,
+          eventType: 'model_call',
+          payload: {
+            workflow_step_id: params.stepId,
+            model: `cli/${cliModelId}`,
+            lane: 'cli',
+            total_tokens: result.usage?.totalTokens ?? 0,
+            total_cost_usd: '0.000000',
+            reported_cost_usd: result.reportedCostUsd,
+            num_turns: result.numTurns,
+            duration_ms: result.durationMs,
+            error_kind: result.errorKind,
+          },
+          tokensUsed: result.usage?.totalTokens ?? 0,
+          costUsd: '0.000000',
+        });
+      } catch (logError) {
+        console.error('[ring] failed to log CLI model_call event:', logError);
+      }
 
       if (result.ok && result.resultText.trim()) {
         return {
@@ -378,42 +439,52 @@ export async function invokeRingSeat(params: {
         setCliLaneCooldown(cli);
       }
       console.warn(
-        `[ring] CLI seat failed (${result.errorKind ?? 'empty'}) for ${params.agentRow.name} — falling back to local lane`,
-      );
-    } catch (error) {
-      setCliLaneCooldown(cli);
-      console.warn(
-        `[ring] CLI bridge unavailable for ${params.agentRow.name}: ${error instanceof Error ? error.message : String(error)}`,
+        `[ring] CLI seat failed (${result.errorKind ?? 'empty'}) for ${params.agentRow.name} — falling back`,
       );
     }
   }
 
-  // Fallback: the agent's own non-CLI model access (local first by lane rank).
+  // Fallback: the agent's own non-CLI model access — local lane first, then
+  // metered cloud (with real cost accounting) as the lane of last resort.
   const fallback = await resolveRingFallbackModel(params.agentRow);
-  if (!fallback && resolved.provider === 'cli') {
+  if (!fallback) {
     throw new Error(
-      `Ring seat ${params.agentRow.name}: CLI lane failed and no non-CLI fallback model is accessible`,
+      `Ring seat ${params.agentRow.name}: ${attemptedCli ? 'CLI lane failed and ' : ''}no non-CLI fallback model is accessible`,
     );
   }
 
-  const model = fallback ?? resolved;
   const agent = new Agent({
     id: `ring-${params.agentRow.id}`,
     name: params.agentRow.name,
     instructions:
       `You are ${params.agentRow.name}. Follow the instructions in the user message exactly. ` +
       'Do not ask questions; produce the requested output in full.',
-    model: model.modelId,
+    model: fallback.resolved.modelId,
   });
 
   const response = await agent.generate(params.prompt, {
     maxSteps: 1,
-    modelSettings: { maxOutputTokens: 8192 },
+    // The synthesizer must re-emit the whole revised PRD inside the JSON
+    // block, so the ceiling has to be generous.
+    modelSettings: { maxOutputTokens: 16384 },
+    abortSignal: AbortSignal.timeout(RING_CLI_TIMEOUT_MS),
   });
 
   const usage = response.usage as { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined;
-  const totalTokens = usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
-  const lane = model.provider === 'ollama' ? 'ollama' : 'cloud';
+  const inputTokens = usage?.inputTokens ?? 0;
+  const outputTokens = usage?.outputTokens ?? 0;
+  const totalTokens = usage?.totalTokens ?? inputTokens + outputTokens;
+  const lane = fallback.resolved.provider === 'ollama' ? 'ollama' : 'cloud';
+
+  // Metered lanes bill for real — account for it so budget enforcement sees it.
+  let costUsd = '0.000000';
+  if (lane === 'cloud') {
+    const rates = await getModelCostRates({
+      modelConfigId: fallback.configId,
+      resolvedModelId: fallback.resolved.resolvedModelId,
+    });
+    costUsd = estimateCostUsd(inputTokens, outputTokens, rates.inputCostPerToken, rates.outputCostPerToken);
+  }
 
   await logTaskEvent({
     taskId: params.taskId,
@@ -421,22 +492,22 @@ export async function invokeRingSeat(params: {
     eventType: 'model_call',
     payload: {
       workflow_step_id: params.stepId,
-      model: model.resolvedModelId,
+      model: fallback.resolved.resolvedModelId,
       lane,
       total_tokens: totalTokens,
-      total_cost_usd: '0.000000',
-      fallback_from_cli: resolved.provider === 'cli',
+      total_cost_usd: costUsd,
+      fallback_from_cli: attemptedCli,
     },
     tokensUsed: totalTokens,
-    costUsd: '0.000000',
+    costUsd,
   });
 
   return {
     text: response.text,
     lane,
-    resolvedModelId: model.resolvedModelId,
+    resolvedModelId: fallback.resolved.resolvedModelId,
     totalTokens,
-    totalCostUsd: '0.000000',
+    totalCostUsd: costUsd,
   };
 }
 
@@ -450,14 +521,23 @@ async function resolveRingFallbackModel(agentRow: DbAgent) {
   const configs = await db.query.modelConfigs.findMany({
     where: and(
       inArray(modelConfigs.id, accessRows.map((row) => row.modelConfigId)),
-      eq(modelConfigs.provider, 'ollama'),
       eq(modelConfigs.isAvailable, true),
     ),
   });
-  if (configs.length === 0) return null;
 
-  const resolved = await resolveModel(configs[0].id, undefined, agentRow.id);
-  return resolved.provider === 'cli' ? null : resolved;
+  // Local first; metered cloud only as the lane of last resort.
+  const ordered = [
+    ...configs.filter((config) => config.provider === 'ollama'),
+    ...configs.filter((config) => config.provider !== 'ollama' && config.provider !== 'cli'),
+  ];
+
+  for (const config of ordered) {
+    const resolved = await resolveModel(config.id, undefined, agentRow.id);
+    if (resolved.provider !== 'cli') {
+      return { resolved, configId: config.id };
+    }
+  }
+  return null;
 }
 
 export async function getRingAgentRow(name: string): Promise<DbAgent> {

@@ -651,11 +651,16 @@ export async function executeHeartbeat(agentId: string): Promise<{
     }
 
     if (budgetExceeded) {
-      // Agent is now paused; task transitions to blocked
-      await db
+      // Agent is now paused; the task transitions to blocked — but only from
+      // in_progress. A workflow that already parked the task (e.g. the ring
+      // gate's waiting_for_human) must not be overwritten with an invalid
+      // transition that strands its approval.
+      const [blockedRow] = await db
         .update(tasks)
         .set({ status: 'blocked', updatedAt: new Date() })
-        .where(eq(tasks.id, checkedOutTask.id));
+        .where(and(eq(tasks.id, checkedOutTask.id), eq(tasks.status, 'in_progress')))
+        .returning({ id: tasks.id });
+      if (blockedRow) {
 
       await logTaskEvent({
         taskId: checkedOutTask.id,
@@ -667,6 +672,7 @@ export async function executeHeartbeat(agentId: string): Promise<{
           reason: 'Budget exceeded — agent paused',
         },
       });
+      }
     }
 
     // 9. Complete heartbeat record
@@ -906,21 +912,25 @@ export async function executeHeartbeatForTask(
       }
 
       if (budgetExceeded) {
-        await db
+        // Guarded transition — see the scheduled-path comment above.
+        const [blockedRow] = await db
           .update(tasks)
           .set({ status: 'blocked', updatedAt: new Date() })
-          .where(eq(tasks.id, taskId));
+          .where(and(eq(tasks.id, taskId), eq(tasks.status, 'in_progress')))
+          .returning({ id: tasks.id });
 
-        await logTaskEvent({
-          taskId,
-          agentId: dbAgent.id,
-          eventType: 'status_change',
-          payload: {
-            from: 'in_progress',
-            to: 'blocked',
-            reason: 'Budget exceeded — agent paused',
-          },
-        });
+        if (blockedRow) {
+          await logTaskEvent({
+            taskId,
+            agentId: dbAgent.id,
+            eventType: 'status_change',
+            payload: {
+              from: 'in_progress',
+              to: 'blocked',
+              reason: 'Budget exceeded — agent paused',
+            },
+          });
+        }
       }
 
       await completeHeartbeatRecord(heartbeatRecord.id, {

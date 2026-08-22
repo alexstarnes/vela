@@ -28,8 +28,17 @@ async function main() {
 
   try {
     // ── A) maxIterations ──
+    // Every workflow step enforces ITS OWN agent's maxIterations, so cap all
+    // runtime agents, not just the Supervisor.
+    const runtimeRows = await db.query.agents.findMany({
+      where: eq(agents.agentKind, 'runtime'),
+    });
+    const iterationSnapshots = runtimeRows.map((row) => ({ id: row.id, maxIterations: row.maxIterations }));
+    for (const row of runtimeRows) {
+      await db.update(agents).set({ maxIterations: 2, updatedAt: new Date() }).where(eq(agents.id, row.id));
+    }
     await db.update(agents).set({
-      maxIterations: 2, budgetMonthlyUsd: null, budgetMonthlyRuns: null,
+      budgetMonthlyUsd: null, budgetMonthlyRuns: null,
       status: 'active', updatedAt: new Date(),
     }).where(eq(agents.id, supervisor.id));
 
@@ -69,8 +78,10 @@ async function main() {
       terminated_without_hang: true,
     };
 
-    // Restore iteration cap before the next stages.
-    await db.update(agents).set({ maxIterations: snap.maxIterations, updatedAt: new Date() }).where(eq(agents.id, supervisor.id));
+    // Restore iteration caps before the next stages.
+    for (const snapRow of iterationSnapshots) {
+      await db.update(agents).set({ maxIterations: snapRow.maxIterations, updatedAt: new Date() }).where(eq(agents.id, snapRow.id));
+    }
 
     // ── B) wall-clock ceiling on the step telemetry ──
     const { createWorkflowStepTelemetry } = await import('@/lib/mastra/workflows/steps/agent-telemetry');

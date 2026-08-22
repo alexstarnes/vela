@@ -27,7 +27,7 @@
  *   8. Bootstrap + shutdown
  */
 
-import nextEnv from '@next/env';
+import './bot-env';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -51,8 +51,7 @@ import { db } from '@/lib/db';
 import { agents, tasks } from '@/lib/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 
-const { loadEnvConfig } = nextEnv;
-loadEnvConfig(process.cwd());
+// Env is loaded by ./bot-env (first import) so @/lib/db sees it at load time.
 
 // ─── 1. Config ──────────────────────────────────────────────────────
 
@@ -814,7 +813,13 @@ process.on('SIGTERM', () => {
   void shutdown('SIGTERM').finally(() => process.exit(0));
 });
 
-main().catch((err) => {
-  console.error('[bot] fatal startup error:', err);
-  process.exit(1);
-});
+// Test seam: tests import the real handlers and drive them with synthetic
+// interactions; VELA_DISCORD_BOT_NO_START=1 suppresses the gateway startup.
+export { handleApprovalButton, isOperator, velaFetch, login as velaLogin };
+
+if (process.env.VELA_DISCORD_BOT_NO_START !== '1') {
+  main().catch((err) => {
+    console.error('[bot] fatal startup error:', err);
+    process.exit(1);
+  });
+}

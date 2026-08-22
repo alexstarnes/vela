@@ -9,6 +9,22 @@ import { logTaskEvent } from '@/lib/events/logger';
 import { assertValidTransition, type TaskStatus } from '@/lib/tasks/state-machine';
 import type { ActionResult } from './projects';
 
+/**
+ * revalidatePath throws ("static generation store missing") outside a request
+ * scope — but these actions are also called from the workflow runtime and the
+ * node-cron scheduler, where there is no request. Cache revalidation is
+ * meaningless there anyway, so a failed revalidate is a no-op, never an error.
+ */
+function safeRevalidate(...paths: Array<[string] | [string, 'page' | 'layout']>): void {
+  for (const args of paths) {
+    try {
+      revalidatePath(...(args as [string, ('page' | 'layout')?]));
+    } catch {
+      // No request store (scheduler/workflow context) — nothing to revalidate.
+    }
+  }
+}
+
 // ─── Types ────────────────────────────────────────────────────────
 
 export type ApprovalWithTask = Awaited<ReturnType<typeof listPendingApprovals>>[number];
@@ -86,24 +102,21 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
 
   const { approvalId, reviewerNotes } = parsed.data;
 
-  // Load the approval
-  const approval = await db.query.approvals.findFirst({
-    where: and(eq(approvals.id, approvalId), eq(approvals.status, 'pending')),
-  });
-
-  if (!approval) {
-    return { success: false, error: 'Approval not found or already resolved' };
-  }
-
-  // Mark the approval as approved
-  await db
+  // Atomic pending→approved flip: the status predicate makes concurrent
+  // approvals race safely — exactly one caller wins, the rest see 0 rows.
+  const [approval] = await db
     .update(approvals)
     .set({
       status: 'approved',
       resolvedAt: new Date(),
       reviewerNotes: reviewerNotes ?? null,
     })
-    .where(eq(approvals.id, approvalId));
+    .where(and(eq(approvals.id, approvalId), eq(approvals.status, 'pending')))
+    .returning();
+
+  if (!approval) {
+    return { success: false, error: 'Approval not found or already resolved' };
+  }
 
   // Log the approval response event on the parent task
   if (approval.taskId) {
@@ -294,9 +307,7 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
     }
   }
 
-  revalidatePath('/tasks');
-  revalidatePath('/tasks/[id]', 'page');
-  revalidatePath('/activity');
+  safeRevalidate(['/tasks'], ['/tasks/[id]', 'page'], ['/activity']);
   return { success: true, data: undefined };
 }
 
@@ -316,23 +327,20 @@ export async function rejectApproval(input: unknown): Promise<ActionResult> {
 
   const { approvalId, reviewerNotes } = parsed.data;
 
-  const approval = await db.query.approvals.findFirst({
-    where: and(eq(approvals.id, approvalId), eq(approvals.status, 'pending')),
-  });
-
-  if (!approval) {
-    return { success: false, error: 'Approval not found or already resolved' };
-  }
-
-  // Mark as rejected
-  await db
+  // Atomic pending→rejected flip — same race-safety as approveApproval.
+  const [approval] = await db
     .update(approvals)
     .set({
       status: 'rejected',
       resolvedAt: new Date(),
       reviewerNotes: reviewerNotes ?? null,
     })
-    .where(eq(approvals.id, approvalId));
+    .where(and(eq(approvals.id, approvalId), eq(approvals.status, 'pending')))
+    .returning();
+
+  if (!approval) {
+    return { success: false, error: 'Approval not found or already resolved' };
+  }
 
   if (approval.taskId) {
     await logTaskEvent({
@@ -376,9 +384,7 @@ export async function rejectApproval(input: unknown): Promise<ActionResult> {
     }
   }
 
-  revalidatePath('/tasks');
-  revalidatePath('/tasks/[id]', 'page');
-  revalidatePath('/activity');
+  safeRevalidate(['/tasks'], ['/tasks/[id]', 'page'], ['/activity']);
   return { success: true, data: undefined };
 }
 
@@ -416,6 +422,6 @@ export async function createApprovalRequest(input: {
     },
   });
 
-  revalidatePath('/tasks');
+  safeRevalidate(['/tasks']);
   return { approvalId: row.id };
 }

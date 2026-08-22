@@ -59,8 +59,19 @@ export async function appendDocumentRevision(params: {
         .returning();
       return row;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/uq_documents_task_key_revision|duplicate key/i.test(message) || attempt === 2) {
+      // postgres-js/drizzle wrap the PG error — walk the cause chain for the
+      // unique-violation code rather than trusting the message text.
+      const isUniqueViolation = (err: unknown): boolean => {
+        for (let cursor = err; cursor; cursor = (cursor as { cause?: unknown }).cause) {
+          const code = (cursor as { code?: string }).code;
+          const message = (cursor as { message?: string }).message ?? '';
+          if (code === '23505' || /uq_documents_task_key_revision|duplicate key/i.test(message)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      if (!isUniqueViolation(error) || attempt === 2) {
         throw error;
       }
       // Revision race — re-read MAX(revision) and retry.

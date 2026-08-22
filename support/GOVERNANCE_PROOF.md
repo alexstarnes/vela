@@ -142,3 +142,51 @@ agent** (the pause was also missing — plan §1.2 requires both).
 `locked_at` is older than 10 minutes, every 5 minutes by cron.
 
 *(Kill-test evidence appended below at §6a.)*
+
+---
+
+## 1a. Dollar-metric evidence (final clean pass, verbatim)
+
+```json
+"stage1_runs": [
+  { "run": 1, "endStatus": "review", "agent_status": "active", "used_usd": "0.0019" },
+  { "run": 2, "endStatus": "review", "agent_status": "active", "used_usd": "0.0048" },
+  { "run": 3, "endStatus": "review", "agent_status": "active", "used_usd": "0.0077" },
+  { "run": 4, "endStatus": "open",   "agent_status": "active", "used_usd": "0.0095" },
+  { "run": 5, "endStatus": "blocked","agent_status": "budget_exceeded", "used_usd": "0.0114" }
+],
+"dollar_warning_events": [
+  { "payload": { "ratio": "0.9500", "used_usd": 0.0095, "limit_usd": 0.01 } }  // ×3 — re-warns per attempt in the 80–100% band
+],
+"dollar_exceeded_events": [
+  { "payload": { "ratio": "1.1400", "used_usd": 0.0114, "limit_usd": 0.01 } }
+],
+"exceeding_task_blocked_event": { "to": "blocked", "from": "in_progress", "reason": "Budget exceeded — agent paused" },
+"blocked_probe": { "status": "open", "heartbeat_start_events": 0 },
+"before_override_status": "budget_exceeded",
+"after_override": {
+  "status": "active",
+  "audit_record": {
+    "description": "Operator reactivated agent \"Supervisor\" from status \"budget_exceeded\"",
+    "action_type": "budget_override", "status": "approved"
+  }
+},
+"after_reset": {
+  "status": "active", "used_usd": "0.0012", "used_runs": 1,
+  "reset_at_advanced_to": "2026-09-22T03:38:09.712Z", "reset_probe_ran": true
+}
+```
+
+**PASS** on every §1.1 box. Known cosmetic wart (pre-existing, unchanged): the
+80% warning re-fires on every spend while the ratio stays in [0.8, 1.0) — no
+once-per-crossing latch. Logged as an observation, not fixed (event noise,
+not an enforcement gap).
+
+## 2a. Concurrency (Phase 2 suite, tests/load/)
+
+- `checkout-contention`: 8 workers, 10-task queue, real FOR UPDATE SKIP LOCKED
+  statement → 10/10 unique checkouts, zero duplicates, zero lingering locks.
+- `budget-concurrency`: 50∥ spendBudget + 50∥ recordBudgetRun → exactly
+  $0.5000 / 50 runs.
+- `loop-tracker-isolation`: 20 interleaved trackers, each throws on exactly
+  its own 3rd identical signature.

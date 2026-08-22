@@ -49,8 +49,9 @@ const usageSchema = z.object({
 
 const ringLoadedSchema = ringInputSchema.extend({
   // 'run' = execute the ring; 'already_approved' = the gate has been passed,
-  // finish the task instead of re-running reviewers.
-  ringPhase: z.enum(['run', 'already_approved']),
+  // finish the task; 'gate_pending' = an unanswered approval already covers
+  // this revision — hold at the gate without re-spending the ring.
+  ringPhase: z.enum(['run', 'already_approved', 'gate_pending']),
   prdMarkdown: z.string(),
   prdRevision: z.number(),
   usage: usageSchema,
@@ -113,21 +114,32 @@ const loadPrdStep = createStep({
       },
     });
 
-    // If the human already approved a backlog produced from this PRD revision
-    // (or newer), the ring is complete — don't re-run reviewers.
+    // Gate bookkeeping. The approval payload stores prd_revision =
+    // revised.revision — the revision the gate itself wrote — so:
+    //   approved && payload.prd_revision >= prd.revision  → ring complete
+    //   pending  && payload.prd_revision >= prd.revision  → gate already
+    //     raised for the current content; do NOT re-run reviewers (a requeued
+    //     task with an unanswered approval must not re-spend the ring).
+    // A newer human-appended revision makes both comparisons false → fresh run.
     const latestApproval = await db.query.approvals.findFirst({
       where: (a, { and: andOp, eq: eqOp }) =>
         andOp(eqOp(a.taskId, task.id), eqOp(a.actionType, 'prd_backlog')),
       orderBy: (a, { desc }) => [desc(a.createdAt)],
     });
-    const approvedForCurrentRevision =
-      latestApproval?.status === 'approved' &&
-      ((latestApproval.payload as { prd_revision?: number } | null)?.prd_revision ?? -1) >=
-        prd.revision - 1; // synthesis writes revision+1 after the reviewed one
+    const approvalRevision =
+      (latestApproval?.payload as { prd_revision?: number } | null)?.prd_revision ?? -1;
+    const coversCurrentRevision = approvalRevision >= prd.revision;
+
+    const ringPhase =
+      latestApproval?.status === 'pending' && coversCurrentRevision
+        ? ('gate_pending' as const)
+        : latestApproval?.status === 'approved' && coversCurrentRevision
+          ? ('already_approved' as const)
+          : ('run' as const);
 
     return {
       ...inputData,
-      ringPhase: approvedForCurrentRevision ? ('already_approved' as const) : ('run' as const),
+      ringPhase,
       prdMarkdown: prd.contentMd,
       prdRevision: prd.revision,
       usage: { totalTokens: 0, totalCostUsd: '0.000000' },
@@ -248,7 +260,7 @@ const ringReviewStep = createStep({
   inputSchema: ringLoadedSchema,
   outputSchema: ringReviewedSchema,
   execute: async ({ inputData }) => {
-    if (inputData.ringPhase === 'already_approved') {
+    if (inputData.ringPhase !== 'run') {
       return { ...inputData, submissions: [], reviewerLanes: [] };
     }
 
@@ -302,7 +314,7 @@ const ringSynthesizeStep = createStep({
   inputSchema: ringReviewedSchema,
   outputSchema: ringSynthesizedSchema,
   execute: async ({ inputData }) => {
-    if (inputData.ringPhase === 'already_approved') {
+    if (inputData.ringPhase !== 'run') {
       return { ...inputData, synthesis: null };
     }
 
@@ -398,6 +410,38 @@ const ringGateStep = createStep({
   execute: async ({ inputData }) => {
     const task = await db.query.tasks.findFirst({ where: eq(tasks.id, inputData.taskId) });
     if (!task) throw new Error(`Task ${inputData.taskId} not found`);
+
+    if (inputData.ringPhase === 'gate_pending') {
+      // An unanswered approval already covers this revision — hold at the
+      // gate; nothing is re-run and no duplicate approval is created.
+      await db
+        .update(tasks)
+        .set({ status: 'waiting_for_human', updatedAt: new Date() })
+        .where(eq(tasks.id, task.id));
+      await logTaskEvent({
+        taskId: task.id,
+        agentId: inputData.agentId,
+        eventType: 'status_change',
+        payload: {
+          from: task.status,
+          to: 'waiting_for_human',
+          reason: 'Critique-ring approval still pending — holding at the gate',
+        },
+      });
+      return {
+        taskId: inputData.taskId,
+        agentId: inputData.agentId,
+        heartbeatId: inputData.heartbeatId,
+        summary: 'Critique-ring approval still pending; holding at the gate without re-running the ring.',
+        usage: inputData.usage,
+        finalStatus: 'waiting_for_human' as const,
+        outcome: {
+          kind: 'waiting_for_human' as const,
+          statusTarget: 'waiting_for_human' as const,
+          reason: 'Backlog approval still pending',
+        },
+      };
+    }
 
     if (inputData.ringPhase === 'already_approved' || !inputData.synthesis) {
       // Gate already passed — the approval handler created the child tasks;
