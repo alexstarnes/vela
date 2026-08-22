@@ -17,11 +17,12 @@ import { logTaskEvent } from '@/lib/events/logger';
 import { createMastraAgent } from './agent-factory';
 import { getFallbackModelForTier } from './router';
 import { getMastra } from './index';
-import { checkBudgetPrecondition, spendBudget } from '@/lib/governance/budget';
+import { applyBudgetResetIfDue, checkBudgetPrecondition, spendBudget, recordBudgetRun } from '@/lib/governance/budget';
 import { LoopTracker, LoopDetectedError } from '@/lib/governance/loop-detector';
 import { checkoutWorkspaceGitRef } from '@/lib/helper/client';
 import type { Task, Agent as DbAgent } from '@/lib/db/schema';
 import { classifyTaskMode } from '@/lib/orchestration/mode-classifier';
+import { taskHasPrdDocument } from '@/lib/documents';
 import { incrementTaskFailureCount } from '@/lib/orchestration/escalation';
 import { selectWorkflowForClassification, type WorkflowId } from '@/lib/orchestration/workflow-selector';
 import { estimateCostUsd, getModelCostRates } from './costs';
@@ -297,12 +298,19 @@ async function runAgentOnTask(
   return { totalTokens, costUsd };
 }
 
-function selectRuntimeWorkflow(
+async function selectRuntimeWorkflow(
   dbAgent: DbAgent,
   task: Task,
-): WorkflowId | null {
+): Promise<WorkflowId | null> {
   if (dbAgent.agentKind !== 'runtime' || dbAgent.name !== 'Supervisor') {
     return null;
+  }
+
+  // Product mode is a deterministic policy check, not an AI call: a task
+  // carrying a 'prd' document is product work and routes to the critique
+  // ring instead of the build pipeline.
+  if (await taskHasPrdDocument(task.id)) {
+    return 'critiqueRingWorkflow';
   }
 
   const classification = classifyTaskMode(task);
@@ -377,6 +385,18 @@ async function runWorkflowOnTask(
 
   if (result.status !== 'success') {
     const detail = describeWorkflowFailure(result);
+
+    // Loop detections inside workflow steps surface as step failures whose
+    // error message comes from LoopDetectedError. Re-throw them as the typed
+    // error so the heartbeat's loop handling (task → blocked, agent paused)
+    // applies to the workflow path exactly as it does to the legacy path.
+    const loopMatch = detail.match(
+      /Loop detected: tool call "([^"]+)" repeated (\d+) times/,
+    );
+    if (loopMatch) {
+      throw new LoopDetectedError(loopMatch[1], parseInt(loopMatch[2], 10));
+    }
+
     throw new Error(
       `Workflow "${workflowId}" exited with status "${result.status}"${detail ? ` — ${detail}` : ''}`,
     );
@@ -537,7 +557,7 @@ export async function executeHeartbeat(agentId: string): Promise<{
 
   try {
     // 1. Load the agent
-    const dbAgent = await db.query.agents.findFirst({
+    let dbAgent = await db.query.agents.findFirst({
       where: eq(agents.id, agentId),
     });
 
@@ -545,7 +565,16 @@ export async function executeHeartbeat(agentId: string): Promise<{
       return { success: false, error: `Agent ${agentId} not found` };
     }
 
-    // 2. Check agent status
+    // 2. Apply any due monthly budget reset BEFORE the status gate — the lazy
+    //    reset is what un-pauses a budget_exceeded agent, so gating on status
+    //    first would leave it paused forever once its reset date passed.
+    await applyBudgetResetIfDue(agentId);
+    const refreshedAgent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+    if (refreshedAgent) {
+      dbAgent = refreshedAgent;
+    }
+
+    // 2b. Check agent status
     if (dbAgent.status !== 'active') {
       return { success: false, error: `Agent ${agentId} is ${dbAgent.status}, skipping` };
     }
@@ -590,9 +619,14 @@ export async function executeHeartbeat(agentId: string): Promise<{
       payload: { from: 'open', to: 'in_progress', reason: 'Heartbeat checkout' },
     });
 
+    // 6b. Count this run against the run budget — the second metric that
+    // covers $0 lanes. The crossing run completes; the status flip blocks
+    // the next checkout at the precondition gate.
+    await recordBudgetRun(agentId, checkedOutTask.id);
+
     // 7. Run either the workflow runtime path (bounded rework loop, spends
     //    budget per attempt) or the legacy agent path (single spend below).
-    const runtimeWorkflow = selectRuntimeWorkflow(dbAgent, checkedOutTask);
+    const runtimeWorkflow = await selectRuntimeWorkflow(dbAgent, checkedOutTask);
     let totalTokens: number;
     let costUsd: string;
     let budgetExceeded: boolean;
@@ -674,6 +708,13 @@ export async function executeHeartbeat(agentId: string): Promise<{
           eventType: 'status_change',
           payload: { from: 'in_progress', to: 'blocked', reason: 'Loop detected' },
         });
+
+        // Pause the agent — a looping agent should not pick up more work
+        // until a human has looked at why it looped.
+        await db
+          .update(agents)
+          .set({ status: 'paused', updatedAt: new Date() })
+          .where(eq(agents.id, agentId));
       } catch {
         console.error('[heartbeat] Failed to log loop event');
       }
@@ -754,12 +795,21 @@ export async function executeHeartbeatForTask(
       return { success: false, error: `Task ${taskId} has no assigned agent` };
     }
 
-    const dbAgent = await db.query.agents.findFirst({
+    let dbAgent = await db.query.agents.findFirst({
       where: eq(agents.id, task.assignedAgentId),
     });
 
     if (!dbAgent) {
       return { success: false, error: `Agent ${task.assignedAgentId} not found` };
+    }
+
+    // Apply any due monthly budget reset BEFORE the status gate — the lazy
+    // reset is what un-pauses a budget_exceeded agent, so gating on status
+    // first would leave it paused forever once its reset date passed.
+    await applyBudgetResetIfDue(dbAgent.id);
+    const refreshedAgent = await db.query.agents.findFirst({ where: eq(agents.id, dbAgent.id) });
+    if (refreshedAgent) {
+      dbAgent = refreshedAgent;
     }
 
     if (dbAgent.status !== 'active') {
@@ -827,8 +877,11 @@ export async function executeHeartbeatForTask(
         });
       }
 
+      // Count this run against the run budget (second metric, covers $0 lanes).
+      await recordBudgetRun(dbAgent.id, taskId);
+
       const taskInProgress = { ...task, status: 'in_progress' } as Task;
-      const runtimeWorkflow = selectRuntimeWorkflow(dbAgent, taskInProgress);
+      const runtimeWorkflow = await selectRuntimeWorkflow(dbAgent, taskInProgress);
       let totalTokens: number;
       let costUsd: string;
       let budgetExceeded: boolean;
@@ -907,6 +960,13 @@ export async function executeHeartbeatForTask(
             eventType: 'status_change',
             payload: { from: 'in_progress', to: 'blocked', reason: 'Loop detected' },
           });
+
+          // Pause the agent — a looping agent should not pick up more work
+          // until a human has looked at why it looped.
+          await db
+            .update(agents)
+            .set({ status: 'paused', updatedAt: new Date() })
+            .where(eq(agents.id, dbAgent.id));
         } catch {
           // swallow
         }

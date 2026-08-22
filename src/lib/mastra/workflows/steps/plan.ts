@@ -8,7 +8,7 @@ import { isRouterModelAvailable } from '@/lib/mastra/router';
 import { buildLowRiskDeterministicPlan } from '@/lib/orchestration/low-risk-discovery';
 import { getTaskExecutionPolicy } from '@/lib/orchestration/task-shape';
 import { eq } from 'drizzle-orm';
-import { createWorkflowStepTelemetry } from './agent-telemetry';
+import { createWorkflowStepTelemetry, generateWithLoopCheck } from './agent-telemetry';
 import { plannedTaskSchema, repoMappedTaskSchema } from './shared';
 
 function supervisorModelOverride(workflowId: string, score: number): string | undefined {
@@ -80,7 +80,7 @@ export const planTaskStep = createStep({
       resolvedModelId: modelOverride ?? resolvedModelId ?? provider,
     });
 
-    const response = await agent.generate(
+    const response = await generateWithLoopCheck(telemetry, () => agent.generate(
       `Create a short execution plan for this task.
 
 Task title: ${task.title}
@@ -104,7 +104,7 @@ Return:
         onIterationComplete: telemetry.onIterationComplete,
         abortSignal: telemetry.abortSignal,
       },
-    );
+    ));
     const usageTotals = telemetry.getUsageTotals();
     const planText = response.text.trim()
       ? response.text

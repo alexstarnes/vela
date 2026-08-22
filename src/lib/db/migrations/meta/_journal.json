@@ -50,6 +50,20 @@
       "when": 1775660977843,
       "tag": "0006_public_stature",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787371149528,
+      "tag": "0007_fat_the_anarchist",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787372075209,
+      "tag": "0008_smiling_vanisher",
+      "breakpoints": true
     }
   ]
 }

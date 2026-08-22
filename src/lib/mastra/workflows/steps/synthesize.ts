@@ -7,7 +7,7 @@ import { getRuntimeAgentRow } from '@/lib/mastra/agents/runtime-agent-db';
 import { isRouterModelAvailable } from '@/lib/mastra/router';
 import { getTaskExecutionPolicy } from '@/lib/orchestration/task-shape';
 import { eq } from 'drizzle-orm';
-import { createWorkflowStepTelemetry } from './agent-telemetry';
+import { createWorkflowStepTelemetry, generateWithLoopCheck } from './agent-telemetry';
 import { reviewedOutcomeWorkflowSchema, workflowOutputSchema } from './shared';
 
 function synthesizeModelOverride(workflowId: string, score: number): string | undefined {
@@ -73,7 +73,7 @@ export const synthesizeTaskStep = createStep({
       resolvedModelId: modelOverride ?? resolvedModelId ?? 'anthropic/claude-sonnet-4-5',
     });
 
-    const response = await agent.generate(
+    const response = await generateWithLoopCheck(telemetry, () => agent.generate(
       `Summarize the completed workflow run.
 
 Task title: ${task.title}
@@ -104,7 +104,7 @@ Return:
         onIterationComplete: telemetry.onIterationComplete,
         abortSignal: telemetry.abortSignal,
       },
-    );
+    ));
     const usageTotals = telemetry.getUsageTotals();
 
     await logTaskEvent({

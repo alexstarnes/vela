@@ -1,6 +1,13 @@
 import { logTaskEvent } from '@/lib/events/logger';
 import { estimateCostUsd, getModelCostRates } from '@/lib/mastra/costs';
 import { extractToolCallMeta } from '@/lib/mastra/tool-call-meta';
+import { LoopTracker, LoopDetectedError } from '@/lib/governance/loop-detector';
+
+/** Wall-clock ceiling per LLM workflow step; the helper owns CLI child
+ *  lifetimes separately. Overridable per deployment via env. */
+const DEFAULT_STEP_WALL_CLOCK_MS = Number(
+  process.env.VELA_STEP_WALL_CLOCK_MS ?? 10 * 60 * 1000,
+);
 
 interface StepLike {
   text?: string;
@@ -14,6 +21,25 @@ interface StepLike {
 }
 
 const EDIT_TOOL_NAMES = new Set(['write_workspace_file', 'apply_diff']);
+
+/**
+ * Run an agent generation and surface loop aborts as LoopDetectedError
+ * whether the aborted generate() returns partial output or throws.
+ */
+export async function generateWithLoopCheck<T>(
+  telemetry: { throwIfLoopDetected: () => void },
+  generate: () => Promise<T>,
+): Promise<T> {
+  let result: T;
+  try {
+    result = await generate();
+  } catch (error) {
+    telemetry.throwIfLoopDetected();
+    throw error;
+  }
+  telemetry.throwIfLoopDetected();
+  return result;
+}
 
 export function createWorkflowStepTelemetry(params: {
   taskId: string;
@@ -34,6 +60,10 @@ export function createWorkflowStepTelemetry(params: {
    */
   requireEditByIteration?: number;
   maxSteps?: number;
+  /** Identical tool+input calls tolerated before the run is stopped. */
+  loopThreshold?: number;
+  /** Wall-clock ceiling for this step's agent loop; 0 disables. */
+  maxWallClockMs?: number;
 }) {
   const controller = new AbortController();
   const ratesPromise = getModelCostRates({
@@ -48,6 +78,36 @@ export function createWorkflowStepTelemetry(params: {
   let truncationCount = 0;
   let hasCalledEditTool = false;
   const seenToolCallIds = new Set<string>();
+
+  // Loop governance for the workflow path: the legacy path tracks tool-call
+  // signatures in the heartbeat runner, but workflow steps run their own
+  // agent loops, so the tracker lives here and aborts the generation.
+  const loopTracker = new LoopTracker(params.loopThreshold ?? 3);
+  let loopError: LoopDetectedError | null = null;
+
+  // Wall-clock containment: a non-terminating agent loop is aborted at the
+  // boundary regardless of tokens or iterations.
+  let wallClockStopReason: string | null = null;
+  const wallClockMs = params.maxWallClockMs ?? DEFAULT_STEP_WALL_CLOCK_MS;
+  if (wallClockMs > 0) {
+    const timer = setTimeout(() => {
+      wallClockStopReason = `Wall-clock ceiling reached after ${wallClockMs}ms in step ${params.stepId}.`;
+      void logTaskEvent({
+        taskId: params.taskId,
+        agentId: params.agentId,
+        eventType: 'error',
+        payload: {
+          workflow_step_id: params.stepId,
+          kind: 'wall_clock_timeout',
+          limit_ms: wallClockMs,
+          iteration,
+          model: params.resolvedModelId,
+        },
+      });
+      controller.abort();
+    }, wallClockMs);
+    timer.unref?.();
+  }
 
   return {
     abortSignal: controller.signal,
@@ -140,6 +200,38 @@ export function createWorkflowStepTelemetry(params: {
         truncationCount += 1;
       }
 
+      // Loop detection: identical tool+input signatures across iterations.
+      // The detecting call has already executed by the time we observe it,
+      // so abort stops the *next* iteration from happening.
+      if (!loopError) {
+        for (const toolCall of normalizedToolCalls) {
+          try {
+            loopTracker.checkAndRecord(toolCall.name, toolCall.args);
+          } catch (err) {
+            if (err instanceof LoopDetectedError) {
+              loopError = err;
+              await logTaskEvent({
+                taskId: params.taskId,
+                agentId: params.agentId,
+                eventType: 'loop_detected',
+                payload: {
+                  workflow_step_id: params.stepId,
+                  iteration,
+                  tool_name: toolCall.name,
+                  input: toolCall.args,
+                  signature: err.signature,
+                  count: err.count,
+                  message: err.message,
+                },
+              });
+              controller.abort();
+              break;
+            }
+            throw err;
+          }
+        }
+      }
+
       if (normalizedToolCalls.some((toolCall) => EDIT_TOOL_NAMES.has(toolCall.name))) {
         hasCalledEditTool = true;
       }
@@ -166,6 +258,20 @@ export function createWorkflowStepTelemetry(params: {
     },
     async onIterationComplete(context: unknown) {
       const iterationContext = (context ?? {}) as { isFinal?: boolean };
+      if (loopError) {
+        return {
+          continue: false,
+          feedback: loopError.message,
+        };
+      }
+
+      if (wallClockStopReason) {
+        return {
+          continue: false,
+          feedback: wallClockStopReason,
+        };
+      }
+
       if (budgetStopReason) {
         return {
           continue: false,
@@ -215,6 +321,19 @@ export function createWorkflowStepTelemetry(params: {
     },
     getBudgetStopReason() {
       return budgetStopReason;
+    },
+    getWallClockStopReason() {
+      return wallClockStopReason;
+    },
+    /**
+     * Steps call this right after generate() returns: a loop-aborted run
+     * must fail the step (surfacing as LoopDetectedError to the heartbeat)
+     * rather than letting partial output flow downstream.
+     */
+    throwIfLoopDetected() {
+      if (loopError) {
+        throw loopError;
+      }
     },
     getUsageTotals() {
       return {

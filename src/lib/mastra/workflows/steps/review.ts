@@ -7,7 +7,7 @@ import { getRuntimeAgentRow } from '@/lib/mastra/agents/runtime-agent-db';
 import { isRouterModelAvailable } from '@/lib/mastra/router';
 import { getTaskExecutionPolicy } from '@/lib/orchestration/task-shape';
 import { eq } from 'drizzle-orm';
-import { createWorkflowStepTelemetry } from './agent-telemetry';
+import { createWorkflowStepTelemetry, generateWithLoopCheck } from './agent-telemetry';
 import { reviewedTaskSchema, verifiedTaskSchema } from './shared';
 
 function reviewerModelOverride(workflowId: string, score: number): string | undefined {
@@ -87,7 +87,7 @@ export const reviewTaskStep = createStep({
             .join('\n')
         : '- none';
 
-    const response = await agent.generate(
+    const response = await generateWithLoopCheck(telemetry, () => agent.generate(
       `Review the completed workflow output for correctness and risk.
 
 Task title: ${task.title}
@@ -128,7 +128,7 @@ Return:
         onIterationComplete: telemetry.onIterationComplete,
         abortSignal: telemetry.abortSignal,
       },
-    );
+    ));
     const usageTotals = telemetry.getUsageTotals();
 
     const status: 'needs_rework' | 'pass' = response.text.includes('REVIEW_STATUS: needs_rework')

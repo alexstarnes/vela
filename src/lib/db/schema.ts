@@ -84,6 +84,10 @@ export const agents = pgTable('agents', {
   modelConfigId: uuid('model_config_id').references(() => modelConfigs.id),
   budgetMonthlyUsd: numeric('budget_monthly_usd', { precision: 10, scale: 2 }),
   budgetUsedUsd: numeric('budget_used_usd', { precision: 10, scale: 4 }).notNull().default('0'),
+  // Run-count budget: $0 lanes (Ollama, CLI subscription) are invisible to the
+  // USD metric, so heartbeat runs are capped per month as a second ceiling.
+  budgetMonthlyRuns: integer('budget_monthly_runs'),
+  budgetUsedRuns: integer('budget_used_runs').notNull().default(0),
   budgetResetAt: timestamp('budget_reset_at', { withTimezone: true }),
   heartbeatCron: text('heartbeat_cron'),
   heartbeatEnabled: boolean('heartbeat_enabled').notNull().default(true),
@@ -184,6 +188,23 @@ export const approvals = pgTable('approvals', {
   resolvedAt: timestamp('resolved_at', { withTimezone: true }),
 });
 
+// ─── documents ────────────────────────────────────────────────────
+// Keyed, revisioned, agent- and human-editable documents attached to tasks.
+// Append a row per revision; never update in place. The latest revision for a
+// (task_id, key) is MAX(revision). Reserved key: 'prd'.
+export const documents = pgTable('documents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taskId: uuid('task_id').notNull().references(() => tasks.id),
+  key: text('key').notNull(), // reserved: 'prd'; others allowed
+  contentMd: text('content_md').notNull(),
+  revision: integer('revision').notNull(), // monotonic per (task_id, key)
+  createdByAgentId: uuid('created_by_agent_id').references(() => agents.id), // null = human-authored
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uq_documents_task_key_revision').on(table.taskId, table.key, table.revision),
+  index('idx_documents_task_key').on(table.taskId, table.key),
+]);
+
 // ─── Relations ────────────────────────────────────────────────────
 
 export const projectsRelations = relations(projects, ({ one, many }) => ({
@@ -279,6 +300,9 @@ export type NewHeartbeat = typeof heartbeats.$inferInsert;
 
 export type Approval = typeof approvals.$inferSelect;
 export type NewApproval = typeof approvals.$inferInsert;
+
+export type Document = typeof documents.$inferSelect;
+export type NewDocument = typeof documents.$inferInsert;
 
 export type AgentModelAccess = typeof agentModelAccess.$inferSelect;
 export type NewAgentModelAccess = typeof agentModelAccess.$inferInsert;

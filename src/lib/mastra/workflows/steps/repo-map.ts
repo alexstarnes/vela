@@ -12,7 +12,7 @@ import {
   isFileCreationTask,
 } from '@/lib/orchestration/low-risk-discovery';
 import { eq } from 'drizzle-orm';
-import { createWorkflowStepTelemetry } from './agent-telemetry';
+import { createWorkflowStepTelemetry, generateWithLoopCheck } from './agent-telemetry';
 import { classifiedTaskSchema, repoMappedTaskSchema } from './shared';
 
 function extractFilePaths(text: string): string[] {
@@ -182,7 +182,7 @@ export const repoMapTaskStep = createStep({
       modelConfigId: repoMapper.modelConfigId,
       resolvedModelId: resolvedModelId ?? provider,
     });
-    const response = await agent.generate(
+    const response = await generateWithLoopCheck(telemetry, () => agent.generate(
       `Build a concise implementation map for this task.
 
 Task title: ${task.title}
@@ -205,7 +205,7 @@ Return:
         onIterationComplete: telemetry.onIterationComplete,
         abortSignal: telemetry.abortSignal,
       },
-    );
+    ));
 
     const repoMap = {
       status: 'complete' as const,

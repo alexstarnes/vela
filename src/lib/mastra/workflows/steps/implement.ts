@@ -498,6 +498,7 @@ async function generateImplementationWithFallback(params: {
         onIterationComplete: telemetry.onIterationComplete,
         abortSignal,
       });
+      telemetry.throwIfLoopDetected();
       const stepUsage = telemetry.getUsageTotals();
       usageTotals = {
         totalTokens: usageTotals.totalTokens + stepUsage.totalTokens,
@@ -548,6 +549,20 @@ async function generateImplementationWithFallback(params: {
           parseFloat(usageTotals.totalCostUsd) + parseFloat(stepUsage.totalCostUsd)
         ).toFixed(6),
       };
+
+      // Loop aborts must fail the step as the typed error (heartbeat blocks
+      // the task and pauses the agent) — never fall through to model fallback.
+      telemetry.throwIfLoopDetected();
+
+      const wallClockStopReason = telemetry.getWallClockStopReason();
+      if (wallClockStopReason) {
+        return {
+          responseText: `Implementation stopped early: ${wallClockStopReason}`,
+          provider: activeAgent.provider,
+          resolvedModelId: activeAgent.resolvedModelId,
+          usageTotals,
+        };
+      }
 
       const budgetStopReason = telemetry.getBudgetStopReason();
       if (budgetStopReason) {

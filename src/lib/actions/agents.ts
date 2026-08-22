@@ -1,7 +1,7 @@
 'use server';
 
 import { db } from '@/lib/db';
-import { agents } from '@/lib/db/schema';
+import { agents, approvals } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
@@ -94,10 +94,33 @@ export async function activateAgent(id: string): Promise<ActionResult> {
   const parsed = z.string().uuid().safeParse(id);
   if (!parsed.success) return { success: false, error: 'Invalid agent ID' };
 
+  const agent = await db.query.agents.findFirst({ where: eq(agents.id, id) });
+  if (!agent) return { success: false, error: 'Agent not found' };
+
   await db
     .update(agents)
     .set({ status: 'active', updatedAt: new Date() })
     .where(eq(agents.id, id));
+
+  // A reactivation that overrides a governance pause (budget ceiling or loop
+  // detection) is an operator decision — record it in the approvals audit log.
+  if (agent.status === 'budget_exceeded' || agent.status === 'paused') {
+    await db.insert(approvals).values({
+      agentId: id,
+      taskId: null,
+      actionType: 'budget_override',
+      description: `Operator reactivated agent "${agent.name}" from status "${agent.status}"`,
+      payload: {
+        previous_status: agent.status,
+        budget_used_usd: agent.budgetUsedUsd,
+        budget_monthly_usd: agent.budgetMonthlyUsd,
+        budget_used_runs: agent.budgetUsedRuns,
+        budget_monthly_runs: agent.budgetMonthlyRuns,
+      },
+      status: 'approved',
+      resolvedAt: new Date(),
+    });
+  }
 
   revalidatePath('/agents');
   revalidatePath(`/agents/${id}`);
