@@ -1,7 +1,9 @@
 # Vela — Implementation Plan
 
+> **Status note (2026-08-21):** all 5 phases described below are complete — see `support/PROJECT_STATUS.md` for current, code-verified state. This document is kept because every `vela-*` specialist agent definition under `.claude/agents/` still references it for original intent and phase rationale; read it as history, not as the current source of truth.
+>
 > Agent orchestration UI layer built on Mastra + Next.js.
-> This document is the single source of truth for Claude Code implementation.
+> ~~This document is the single source of truth for Claude Code implementation.~~ (superseded by the note above)
 
 ---
 
