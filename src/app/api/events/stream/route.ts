@@ -9,7 +9,7 @@
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { taskEvents } from '@/lib/db/schema';
-import { asc, gt } from 'drizzle-orm';
+import { asc, gte } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,6 +32,11 @@ export async function GET(request: NextRequest) {
     async start(controller) {
       let active = true;
       let lastTs = sinceDate;
+      // JS Dates carry milliseconds while Postgres stores microseconds, so a
+      // strict `>` cursor either re-delivers or (worse, on reconnect) skips
+      // rows sharing the boundary millisecond. Poll with `>=` and exclude the
+      // ids already emitted at exactly the boundary timestamp.
+      let boundaryIds = new Set<string>();
 
       const send = (id: string, event: string, data: unknown) => {
         const chunk =
@@ -55,7 +60,7 @@ export async function GET(request: NextRequest) {
           let batch;
           do {
             batch = await db.query.taskEvents.findMany({
-              where: gt(taskEvents.createdAt, lastTs),
+              where: gte(taskEvents.createdAt, lastTs),
               orderBy: [asc(taskEvents.createdAt)],
               limit: BATCH_SIZE,
               with: {
@@ -64,7 +69,9 @@ export async function GET(request: NextRequest) {
               },
             });
 
+            let emitted = 0;
             for (const ev of batch) {
+              if (boundaryIds.has(ev.id)) continue;
               send(ev.createdAt.toISOString(), 'task_event', {
                 id: ev.id,
                 taskId: ev.taskId,
@@ -76,8 +83,18 @@ export async function GET(request: NextRequest) {
                 costUsd: ev.costUsd,
                 createdAt: ev.createdAt.toISOString(),
               });
-              lastTs = ev.createdAt;
+              emitted += 1;
+              if (ev.createdAt.getTime() !== lastTs.getTime()) {
+                boundaryIds = new Set([ev.id]);
+                lastTs = ev.createdAt;
+              } else {
+                boundaryIds.add(ev.id);
+              }
             }
+            // Safety: a full batch of already-seen boundary rows would loop
+            // forever (>BATCH_SIZE events in one millisecond) — bail to the
+            // next poll tick instead.
+            if (batch.length === BATCH_SIZE && emitted === 0) break;
           } while (batch.length === BATCH_SIZE && active);
         } catch {
           // DB error — keep polling
