@@ -11,6 +11,7 @@ import { db } from '@/lib/db';
 import { agents, tasks } from '@/lib/db/schema';
 import { eq, and, lt, isNotNull, sql } from 'drizzle-orm';
 import { executeHeartbeat } from './heartbeat';
+import { runStrategistRoutine, STRATEGIST_AGENT_NAME } from './strategist-routine';
 
 // In-memory registry of active cron jobs, keyed by agent ID
 const cronJobs = new Map<string, ScheduledTask>();
@@ -75,8 +76,21 @@ function scheduleAgent(agentId: string, cronExpression: string): void {
 
   const job = cron.schedule(cronExpression, () => {
     console.log(`[scheduler] Heartbeat triggered for agent ${agentId}`);
-    // Fire and forget — errors handled inside executeHeartbeat
-    executeHeartbeat(agentId).catch((err) => {
+    // Fire and forget — errors handled inside the executors.
+    void (async () => {
+      // The Differentiation Strategist's cron runs its standing surveillance
+      // routine (it creates its own tasks); every other agent processes its
+      // queue via the normal heartbeat.
+      const agent = await db.query.agents.findFirst({ where: eq(agents.id, agentId) });
+      if (agent?.name === STRATEGIST_AGENT_NAME && agent.agentKind === 'runtime') {
+        const result = await runStrategistRoutine();
+        console.log(
+          `[scheduler] Strategist routine: ${result.ran ? `${result.scans.length} project scan(s)` : `skipped (${result.reason})`}`,
+        );
+        return;
+      }
+      await executeHeartbeat(agentId);
+    })().catch((err) => {
       console.error(`[scheduler] Unhandled heartbeat error for agent ${agentId}:`, err);
     });
   });

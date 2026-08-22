@@ -60,3 +60,24 @@ Format: one section per phase; every VERIFY result, every `⚠` check, every rul
 - [x] CLI lane subscription-billed — empirically no provider key in child env; keychain OAuth subscriptionType=max.
 - [x] Full pipeline E2E: real file change, gate held at review, SSE live.
 - [x] GitHub repo cloned through helper.
+Vela build — PHASE 0 COMPLETE ✅ All lanes verified (CLI confirmed subscription-billed, no key leak — checked child env empirically). Full pipeline E2E: real file change committed, approval gate held, SSE live. GitHub clone-through-helper OK. Bug found+fixed: helper CLI JSON parse dropped usage/cost on stderr noise. Metered spend so far: ~$0.002.
+
+---
+
+## Phase 1 — Exercise governance
+
+### ⚠ The Paperclip question, answered (§1.1)
+**Budget counted dollars only.** Confirmed by reading `src/lib/governance/budget.ts`: sole counter `budget_used_usd`; a $0 Ollama/CLI run was invisible — two of three lanes had NO ceiling. Fixed per plan: added a second metric, **runs per month** (`agents.budget_monthly_runs`/`budget_used_runs`, migration 0007), enforced by `recordBudgetRun()` at heartbeat checkout with the same 80%/100%/auto-pause semantics, included in `checkBudgetPrecondition` and the monthly reset.
+
+### Governance gaps found and fixed (rule 2 decisions, reality over docs)
+1. **Loop detection did not exist on the workflow path.** `LoopTracker` was wired only into the legacy `runAgentOnTask`; the actual product runtime (Supervisor → Mastra workflows) had none. Fixed: `createWorkflowStepTelemetry` now runs a per-step LoopTracker over normalized tool calls, logs a detailed `loop_detected` event, aborts generation, and every workflow step surfaces it as `LoopDetectedError` (via `generateWithLoopCheck`/`throwIfLoopDetected`); `runWorkflowOnTask` re-throws workflow loop failures as the typed error so the heartbeat's blocked/paused handling applies.
+2. **Loop detection blocked the task but never paused the agent.** Plan 1.2 requires both. Both heartbeat catch blocks now set the agent to `paused`.
+3. **Wall-clock ceiling was missing for workflow LLM steps** (plan 1.3: "if no such timeout exists, add one"). Added to step telemetry: default 10 min (`VELA_STEP_WALL_CLOCK_MS`), logs an `error` event `kind: wall_clock_timeout` and aborts. (CLI children were already lifetime-owned by the helper: SIGTERM at timeoutMs, SIGKILL +5s.)
+4. **BUG: monthly budget reset was unreachable for a paused agent.** Both heartbeat entry points checked `status !== 'active'` BEFORE `checkBudgetPrecondition` — but the precondition is what applies the lazy reset. A `budget_exceeded` agent whose `budget_reset_at` passed stayed paused forever. Found by the Phase 1 exercise itself (stage 2 hung). Fixed: `applyBudgetResetIfDue` now runs before the status gate in both paths.
+5. **Override had no audit trail.** `activateAgent` now writes an `approvals` row (`budget_override`, auto-approved, prior status + counters in payload) whenever it reactivates a governance-paused agent.
+6. **Hardening (from DISCORD_SETUP.md's own flag):** helper `cliEnvironment()` stripped only provider keys; spawned CLIs inherited `DATABASE_URL`, `DISCORD_BOT_TOKEN`, `VELA_HELPER_SECRET`, etc. Now strips all app secrets.
+
+### Exercise evidence (details land in GOVERNANCE_PROOF.md)
+- `tests/governance/budget-atomicity.ts`: 20 concurrent spends of $0.01 → exactly $0.2000, zero lost writes. PASS.
+- `tests/governance/run-budget.ts`: real $0-lane runs against budgetMonthlyRuns=5 → `budget_warning` (metric:runs, ratio 0.8) at run 4, `budget_exceeded` + agent auto-pause at run 5, 6th checkout refused (no heartbeat_start). PASS.
+- `tests/governance/budget-thresholds.ts` (dollar metric): in progress — first attempt caught bug #4 above; re-run underway.
