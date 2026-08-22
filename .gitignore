@@ -19,3 +19,6 @@ out/
 
 # pnpm lock
 !pnpm-lock.yaml
+
+# Discord bot Last-Event-ID state (scripts/vela-discord-bot.ts)
+.vela-discord-bot-state.json
