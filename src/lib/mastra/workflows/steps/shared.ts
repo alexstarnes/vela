@@ -7,8 +7,8 @@ import {
   verificationPolicySchema,
 } from '@/lib/mastra/tools/verification-tools';
 
-export const workflowIdSchema = z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow']);
-export const workflowKindSchema = z.enum(['feature', 'high_risk', 'debug']);
+export const workflowIdSchema = z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow', 'critiqueRingWorkflow']);
+export const workflowKindSchema = z.enum(['feature', 'high_risk', 'debug', 'critique_ring']);
 export const executionTierSchema = z.enum(['fast', 'standard', 'premium']);
 
 export const workflowUsageSchema = z.object({

@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import nextEnv from '@next/env';
@@ -318,15 +319,38 @@ function isCliName(value: unknown): value is CliName {
 }
 
 /**
+ * Empty sandbox directory for completion-shaped CLI invocations (no repo
+ * target). Created on demand; kept empty so a wandering CLI finds nothing.
+ */
+let cliSandboxDir: string | null = null;
+async function ensureCliSandboxDir(): Promise<string> {
+  if (cliSandboxDir) return cliSandboxDir;
+  const dir = path.join(os.tmpdir(), 'vela-cli-sandbox');
+  await mkdir(dir, { recursive: true });
+  cliSandboxDir = dir;
+  return dir;
+}
+
+/**
  * Environment for spawned CLIs: strip provider API keys so the CLI uses its
  * own subscription login instead of silently billing a metered key (or dying
  * on a stale one). That is the whole point of the CLI lane.
  */
 function cliEnvironment(): NodeJS.ProcessEnv {
   const env = { ...process.env };
+  // Provider keys: a configured API key silently wins over subscription auth.
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
   delete env.OPENAI_API_KEY;
+  // App secrets the spawned agent has no business inheriting.
+  delete env.DATABASE_URL;
+  delete env.DIRECT_URL;
+  delete env.VELA_PASSWORD;
+  delete env.VELA_HELPER_SECRET;
+  delete env.GITHUB_CLIENT_SECRET;
+  delete env.GITHUB_TOKEN_ENCRYPTION_KEY;
+  delete env.DISCORD_BOT_TOKEN;
+  delete env.BUILD_WEBHOOK;
   return env;
 }
 
@@ -474,6 +498,7 @@ async function executeCli(params: {
   timeoutMs?: number;
   maxTurns?: number;
   allowedTools?: string[];
+  permissionMode?: string;
 }): Promise<CliExecuteResult> {
   const cwd = path.resolve(params.workspacePath);
   await stat(cwd);
@@ -490,7 +515,7 @@ async function executeCli(params: {
       '--output-format',
       'json',
       '--permission-mode',
-      'acceptEdits',
+      params.permissionMode ?? 'acceptEdits',
       '--allowedTools',
       (params.allowedTools ?? CLI_DEFAULT_ALLOWED_TOOLS).join(','),
       '--max-turns',
@@ -1021,18 +1046,20 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
     }
 
     if (request.method === 'POST' && url.pathname === '/cli/execute') {
-      if (
-        !isCliName(body.cli) ||
-        typeof body.workspacePath !== 'string' ||
-        typeof body.prompt !== 'string'
-      ) {
-        throw new Error('cli, workspacePath, and prompt are required');
+      if (!isCliName(body.cli) || typeof body.prompt !== 'string') {
+        throw new Error('cli and prompt are required');
+      }
+      if (body.workspacePath !== undefined && typeof body.workspacePath !== 'string') {
+        throw new Error('workspacePath must be a string when provided');
       }
       sendJson(response, 200, {
         ok: true,
         data: await executeCli({
           cli: body.cli,
-          workspacePath: body.workspacePath,
+          // Omitted workspacePath = completion-shaped invocation (e.g. the
+          // critique ring): run in the empty sandbox so the CLI has no repo
+          // to wander into.
+          workspacePath: body.workspacePath ?? (await ensureCliSandboxDir()),
           prompt: body.prompt,
           model: typeof body.model === 'string' ? body.model : undefined,
           timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
@@ -1040,6 +1067,8 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
           allowedTools: Array.isArray(body.allowedTools)
             ? body.allowedTools.filter((t): t is string => typeof t === 'string')
             : undefined,
+          permissionMode:
+            typeof body.permissionMode === 'string' ? body.permissionMode : undefined,
         }),
       });
       return;

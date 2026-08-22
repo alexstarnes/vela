@@ -6,7 +6,7 @@ export const routingFixtureSchema = z.object({
   description: z.string().default(''),
   expected: z.object({
     mode: z.enum(['single_agent', 'delegated', 'delegated_premium', 'team']),
-    workflowId: z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow']),
+    workflowId: z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow', 'critiqueRingWorkflow']),
     tier: z.enum(['fast', 'standard', 'premium']),
   }),
 });

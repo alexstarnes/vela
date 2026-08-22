@@ -26,7 +26,10 @@ export type EventType =
   | 'routing_tuning'
   | 'scorecard'
   | 'mode_selection'
-  | 'implementation_audit';
+  | 'implementation_audit'
+  | 'ring_context'
+  | 'ring_findings'
+  | 'ring_reconciliation';
 
 export interface LogEventParams {
   taskId: string;

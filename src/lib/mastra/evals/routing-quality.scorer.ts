@@ -4,7 +4,7 @@ import { routingFixtureSchema } from './routing-quality.fixtures';
 
 export const routingResultSchema = z.object({
   mode: z.enum(['single_agent', 'delegated', 'delegated_premium', 'team']),
-  workflowId: z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow']),
+  workflowId: z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow', 'critiqueRingWorkflow']),
   tier: z.enum(['fast', 'standard', 'premium']),
 });
 

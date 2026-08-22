@@ -1,10 +1,19 @@
 import type { Agent, Task } from '@/lib/db/schema';
 import type { ModeClassification } from './mode-classifier';
 
-export type WorkflowKind = 'feature' | 'high_risk' | 'debug';
-export type WorkflowId = 'featureWorkflow' | 'highRiskWorkflow' | 'debugWorkflow';
+export type WorkflowKind = 'feature' | 'high_risk' | 'debug' | 'critique_ring';
+export type WorkflowId =
+  | 'featureWorkflow'
+  | 'highRiskWorkflow'
+  | 'debugWorkflow'
+  | 'critiqueRingWorkflow';
 
-export const WORKFLOW_IDS = ['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow'] as const;
+export const WORKFLOW_IDS = [
+  'featureWorkflow',
+  'highRiskWorkflow',
+  'debugWorkflow',
+  'critiqueRingWorkflow',
+] as const;
 
 export function determineWorkflowKind(
   classification: Pick<ModeClassification, 'score' | 'riskFlags'>,
@@ -28,6 +37,7 @@ export function determineWorkflowKind(
 export function workflowIdForKind(kind: WorkflowKind): WorkflowId {
   if (kind === 'high_risk') return 'highRiskWorkflow';
   if (kind === 'debug') return 'debugWorkflow';
+  if (kind === 'critique_ring') return 'critiqueRingWorkflow';
   return 'featureWorkflow';
 }
 

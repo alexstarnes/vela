@@ -5,7 +5,7 @@ import { deriveRoutingTierAdjustment } from '@/lib/orchestration/routing-tuning'
 import type { WorkflowScorecard } from '@/lib/mastra/analytics/routing-scorecards';
 import { selectWorkflowForClassification, type WorkflowId } from '@/lib/orchestration/workflow-selector';
 
-const workflowIdSchema = z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow']);
+const workflowIdSchema = z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow', 'critiqueRingWorkflow']);
 const executionTierSchema = z.enum(['fast', 'standard', 'premium']);
 
 export const routingEvalInputSchema = z.object({

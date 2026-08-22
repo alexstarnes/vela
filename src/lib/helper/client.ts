@@ -264,12 +264,18 @@ export async function checkCliLaneHealth(cli: CliName): Promise<CliHealthResult>
  * 5-minute header timeout.
  */
 export async function executeCliTask(params: {
-  workspacePath: string;
+  /** Omit for completion-shaped invocations — the helper runs the CLI in an
+   *  empty sandbox so it has no repo to wander into (critique ring, etc.). */
+  workspacePath?: string;
   cli: CliName;
   prompt: string;
   model?: string;
   timeoutMs?: number;
   maxTurns?: number;
+  /** Restrict the CLI's toolset; [] disables tools entirely. */
+  allowedTools?: string[];
+  /** Claude CLI permission mode; defaults to 'acceptEdits' in the helper. */
+  permissionMode?: string;
 }): Promise<CliExecuteResult> {
   const { request } = await import('node:http');
   const timeoutMs = params.timeoutMs ?? CLI_EXECUTE_DEFAULT_TIMEOUT_MS;

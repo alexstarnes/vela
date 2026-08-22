@@ -36,6 +36,7 @@ export const classifyTaskStep = createStep({
       featureWorkflow: 'feature',
       highRiskWorkflow: 'high_risk',
       debugWorkflow: 'debug',
+      critiqueRingWorkflow: 'product',
     };
 
     await db

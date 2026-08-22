@@ -464,8 +464,84 @@ async function seed() {
     console.log(`    ✓ Reassigned ${affectedTasks.length} active task(s) to Supervisor`);
   }
 
+  // 6. Seed runtime skills from version-controlled markdown.
+  //    docs/agent-roles/*.md  → scope 'role'      (the 17 role definitions + flipped variants)
+  //    docs/agent-protocols/*.md → scope 'protocol' (critique-protocol, …)
+  //    Git is the source of truth; the skills table is the runtime cache.
+  //    These scopes are intentionally NOT 'global': agent-factory injects every
+  //    global skill into every prompt, and role skills are injected selectively
+  //    by the workflows that need them (e.g. the critique ring).
+  const skillSeedCount = await seedSkillsFromDocs();
+  console.log(`    ✓ ${skillSeedCount} runtime skills seeded from docs/`);
+
   console.log(`\nDone. Seeded ${defaultModels.length} models, ${runtimeAgentDefinitions.length} runtime agents, and ${legacyReferenceAgents.length} legacy reference agents.\n`);
   await client.end();
+}
+
+/** First `# ` heading in the markdown, or the file slug as fallback. */
+function markdownTitle(contentMd: string, fallback: string): string {
+  const match = contentMd.match(/^#\s+(.+)$/m);
+  return match ? match[1].trim() : fallback;
+}
+
+async function seedSkillsFromDocs(): Promise<number> {
+  const { readdir, readFile } = await import('node:fs/promises');
+  const path = await import('node:path');
+
+  const sources: Array<{ dir: string; scope: string }> = [
+    { dir: path.join(process.cwd(), 'docs', 'agent-roles'), scope: 'role' },
+    { dir: path.join(process.cwd(), 'docs', 'agent-protocols'), scope: 'protocol' },
+  ];
+
+  console.log('\n  Runtime skills (docs/agent-roles + docs/agent-protocols):');
+  let count = 0;
+
+  for (const source of sources) {
+    let files: string[] = [];
+    try {
+      files = (await readdir(source.dir)).filter((f) => f.endsWith('.md')).sort();
+    } catch {
+      console.log(`    (skipped ${source.dir} — not present)`);
+      continue;
+    }
+
+    for (const file of files) {
+      const contentMd = await readFile(path.join(source.dir, file), 'utf8');
+      const name = markdownTitle(contentMd, file.replace(/\.md$/, ''));
+
+      // skills.name has no unique index — follow the agents select-then-upsert
+      // pattern keyed on (name, scope, projectId IS NULL).
+      const [existing] = await db
+        .select()
+        .from(schema.skills)
+        .where(
+          and(
+            eq(schema.skills.name, name),
+            eq(schema.skills.scope, source.scope),
+            isNull(schema.skills.projectId),
+          ),
+        )
+        .limit(1);
+
+      if (existing) {
+        await db
+          .update(schema.skills)
+          .set({ contentMd, updatedAt: new Date() })
+          .where(eq(schema.skills.id, existing.id));
+      } else {
+        await db.insert(schema.skills).values({
+          name,
+          scope: source.scope,
+          projectId: null,
+          contentMd,
+        });
+      }
+      count += 1;
+      console.log(`    ✓ [${source.scope}] ${name}`);
+    }
+  }
+
+  return count;
 }
 
 seed().catch((err) => {

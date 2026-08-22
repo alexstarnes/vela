@@ -65,7 +65,9 @@ function truncateSection(text: string, limit: number): string {
 /**
  * Build the system prompt for an agent given its config, task, and project.
  */
-async function buildSystemPrompt(
+// Exported for the ring-independence test: the test proves the LEGACY prompt
+// path leaks task history (positive control) while ring contexts do not.
+export async function buildSystemPrompt(
   dbAgent: DbAgent,
   task: Task,
 ): Promise<string> {

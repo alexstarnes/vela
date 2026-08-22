@@ -4,7 +4,7 @@ import { routingEvalInputSchema, routingEvalOutputSchema } from './routing-workf
 
 export const routingExpectationSchema = z.object({
   mode: z.enum(['single_agent', 'delegated', 'delegated_premium', 'team']),
-  workflowId: z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow']),
+  workflowId: z.enum(['featureWorkflow', 'highRiskWorkflow', 'debugWorkflow', 'critiqueRingWorkflow']),
   effectiveTier: z.enum(['fast', 'standard', 'premium']),
   floorApplied: z.boolean().optional(),
 });

@@ -120,6 +120,105 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
     });
   }
 
+  // Handle prd_backlog: approved backlog items become child tasks of the PRD
+  // task and enter the existing build pipeline. Goal ancestry threads through
+  // parentTaskId plus an explicit pointer in each description.
+  if (approval.actionType === 'prd_backlog' && approval.taskId) {
+    const payload = approval.payload as {
+      backlog?: Array<{
+        title?: string;
+        description?: string;
+        acceptance_criteria?: string[];
+        source_findings?: string[];
+      }>;
+      project_id?: string | null;
+    } | null;
+
+    const prdTask = await db.query.tasks.findFirst({ where: eq(tasks.id, approval.taskId) });
+    const projectId = payload?.project_id ?? prdTask?.projectId;
+
+    if (payload?.backlog && payload.backlog.length > 0 && projectId && prdTask) {
+      const { agents } = await import('@/lib/db/schema');
+      const supervisor = await db.query.agents.findFirst({
+        where: and(eq(agents.name, 'Supervisor'), eq(agents.agentKind, 'runtime')),
+      });
+
+      for (const item of payload.backlog) {
+        const description = [
+          item.description ?? '',
+          '',
+          'Acceptance criteria:',
+          ...(item.acceptance_criteria ?? []).map((criterion) => `- ${criterion}`),
+          '',
+          `Serves PRD task ${prdTask.id}: "${prdTask.title}"` +
+            (item.source_findings?.length ? ` (from findings ${item.source_findings.join(', ')})` : ''),
+        ]
+          .join('\n')
+          .trim();
+
+        const [child] = await db
+          .insert(tasks)
+          .values({
+            title: String(item.title ?? 'Backlog item'),
+            description,
+            projectId,
+            parentTaskId: prdTask.id,
+            assignedAgentId: supervisor?.id ?? null,
+            createdByAgentId: approval.agentId,
+            priority: 'medium',
+            status: supervisor ? 'open' : 'backlog',
+          })
+          .returning({ id: tasks.id });
+
+        await logTaskEvent({
+          taskId: child.id,
+          agentId: approval.agentId,
+          eventType: 'status_change',
+          payload: {
+            from: null,
+            to: supervisor ? 'open' : 'backlog',
+            reason: `Created from approved PRD backlog (approval ${approvalId})`,
+          },
+        });
+      }
+
+      await logTaskEvent({
+        taskId: prdTask.id,
+        agentId: approval.agentId,
+        eventType: 'delegation',
+        payload: {
+          approval_id: approvalId,
+          child_tasks_created: payload.backlog.length,
+          reason: 'PRD backlog approved — stories entered the build pipeline',
+        },
+      });
+    }
+
+    // Requeue the PRD task so its next heartbeat finalizes the ring (the
+    // workflow sees the approved gate and moves the task to review).
+    if (prdTask && prdTask.status === 'waiting_for_human') {
+      try {
+        assertValidTransition(prdTask.status as TaskStatus, 'open');
+        await db
+          .update(tasks)
+          .set({ status: 'open', updatedAt: new Date() })
+          .where(eq(tasks.id, prdTask.id));
+        await logTaskEvent({
+          taskId: prdTask.id,
+          agentId: approval.agentId,
+          eventType: 'status_change',
+          payload: {
+            from: 'waiting_for_human',
+            to: 'open',
+            reason: 'Backlog approved — PRD task requeued for ring completion',
+          },
+        });
+      } catch {
+        // State machine violation — skip
+      }
+    }
+  }
+
   // Handle task_delegation: create the subtask and resume parent task
   if (approval.actionType === 'task_delegation' && approval.taskId) {
     const payload = approval.payload as Record<string, unknown> | null;
@@ -290,7 +389,7 @@ export async function rejectApproval(input: unknown): Promise<ActionResult> {
 export async function createApprovalRequest(input: {
   agentId: string;
   taskId: string;
-  actionType: 'task_delegation' | 'budget_override' | 'agent_creation' | 'high_risk_change';
+  actionType: 'task_delegation' | 'budget_override' | 'agent_creation' | 'high_risk_change' | 'prd_backlog';
   description: string;
   payload?: Record<string, unknown>;
 }): Promise<{ approvalId: string }> {
