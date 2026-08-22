@@ -764,6 +764,196 @@ async function stopDevServer(workspacePath: string) {
   return { stopped: true, wasRunning: true };
 }
 
+// ─── Git branch lifecycle ──────────────────────────────────────────
+//
+// Small, validated verbs behind the branch-per-task lifecycle: quarantine
+// leftovers, commit a task branch on review-pass, squash-merge on approve.
+// Deliberately NOT expressed through the generic command runner — the
+// helper's security posture is "small verbs, validated args".
+
+/** Git refs the helper will accept. Rejects flags, traversal, and range syntax. */
+function assertSafeGitRef(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 200) {
+    throw new Error(`${field} must be a non-empty git ref (max 200 chars)`);
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) || value.includes('..')) {
+    throw new Error(`${field} contains characters that are not valid in a git ref: ${value}`);
+  }
+  return value;
+}
+
+async function git(cwd: string, args: string[]) {
+  return runProcess('git', args, { cwd });
+}
+
+async function gitOrThrow(cwd: string, args: string[], label: string) {
+  const result = await git(cwd, args);
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr || result.stdout || `${label} failed`);
+  }
+  return result;
+}
+
+async function currentBranch(cwd: string): Promise<string | null> {
+  const result = await git(cwd, ['branch', '--show-current']);
+  const name = result.stdout.trim();
+  return result.exitCode === 0 && name ? name : null;
+}
+
+async function branchExists(cwd: string, branch: string): Promise<boolean> {
+  const result = await git(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  return result.exitCode === 0;
+}
+
+/** Commit SHA parsed from `git commit` output (`[branch abc1234] subject`). */
+function parseCommitSha(stdout: string): string | null {
+  return stdout.match(/\[[\w/.-]+ ([a-f0-9]+)\]/)?.[1] ?? null;
+}
+
+/**
+ * Check out `branch`, creating it from `startPoint` only when it does not
+ * exist yet. Never resets an existing branch — rework attempts re-enter the
+ * same branch so their history accumulates in one place.
+ */
+async function gitBranchEnsure(params: {
+  workspacePath: string;
+  branch: string;
+  startPoint?: string;
+}) {
+  const cwd = path.resolve(params.workspacePath);
+  const branch = assertSafeGitRef(params.branch, 'branch');
+  const startPoint = params.startPoint ? assertSafeGitRef(params.startPoint, 'startPoint') : undefined;
+
+  const before = await currentBranch(cwd);
+  if (before === branch) {
+    return { branch, created: false, previousBranch: before, switched: false };
+  }
+
+  const exists = await branchExists(cwd, branch);
+  if (exists) {
+    await gitOrThrow(cwd, ['checkout', branch], 'git checkout');
+    return { branch, created: false, previousBranch: before, switched: true };
+  }
+
+  const args = ['checkout', '-b', branch];
+  if (startPoint && (await branchExists(cwd, startPoint))) {
+    args.push(startPoint);
+  }
+  await gitOrThrow(cwd, args, 'git checkout -b');
+  return { branch, created: true, previousBranch: before, switched: true };
+}
+
+/**
+ * Move whatever is in the working tree onto `branch` and commit it.
+ * Creates the branch if needed (carrying the dirty tree along, which is
+ * exactly what the quarantine gate wants). A clean tree is not an error —
+ * it reports `committed: false`.
+ */
+async function gitBranchSave(params: {
+  workspacePath: string;
+  branch: string;
+  message: string;
+}) {
+  const cwd = path.resolve(params.workspacePath);
+  const branch = assertSafeGitRef(params.branch, 'branch');
+  if (typeof params.message !== 'string' || !params.message.trim()) {
+    throw new Error('message is required');
+  }
+
+  const ensured = await gitBranchEnsure({ workspacePath: cwd, branch });
+  await gitOrThrow(cwd, ['add', '-A'], 'git add');
+
+  const staged = await git(cwd, ['diff', '--cached', '--quiet']);
+  if (staged.exitCode === 0) {
+    return { branch, committed: false, commitSha: null, created: ensured.created };
+  }
+
+  const commit = await gitOrThrow(cwd, ['commit', '-m', params.message], 'git commit');
+  return {
+    branch,
+    committed: true,
+    commitSha: parseCommitSha(commit.stdout),
+    created: ensured.created,
+  };
+}
+
+/**
+ * Squash-merge `branch` into `baseBranch` — one base commit per task. On
+ * conflict the base branch is restored and the conflict output is returned
+ * rather than thrown: the caller turns it into an honest waiting_for_human,
+ * not a silent failure.
+ */
+async function gitMergeSquash(params: {
+  workspacePath: string;
+  branch: string;
+  baseBranch: string;
+  message: string;
+  deleteBranch?: boolean;
+}) {
+  const cwd = path.resolve(params.workspacePath);
+  const branch = assertSafeGitRef(params.branch, 'branch');
+  const baseBranch = assertSafeGitRef(params.baseBranch, 'baseBranch');
+  if (typeof params.message !== 'string' || !params.message.trim()) {
+    throw new Error('message is required');
+  }
+  if (!(await branchExists(cwd, branch))) {
+    throw new Error(`Branch ${branch} does not exist in this workspace`);
+  }
+
+  await gitOrThrow(cwd, ['checkout', baseBranch], 'git checkout base branch');
+
+  const merge = await git(cwd, ['merge', '--squash', branch]);
+  if (merge.exitCode !== 0) {
+    // `--squash` records no MERGE_HEAD, so `merge --abort` does not apply;
+    // resetting to the base tip is the documented cleanup. The task branch
+    // is untouched, so nothing is lost.
+    await git(cwd, ['reset', '--hard', 'HEAD']);
+    return {
+      merged: false,
+      conflict: true,
+      commitSha: null,
+      branchDeleted: false,
+      baseBranch,
+      output: `${merge.stdout}\n${merge.stderr}`.trim().slice(-4000),
+    };
+  }
+
+  const staged = await git(cwd, ['diff', '--cached', '--quiet']);
+  if (staged.exitCode === 0) {
+    // Branch carried no changes the base does not already have.
+    const deleted = params.deleteBranch !== false ? await git(cwd, ['branch', '-D', branch]) : null;
+    return {
+      merged: true,
+      conflict: false,
+      commitSha: null,
+      branchDeleted: deleted?.exitCode === 0,
+      baseBranch,
+      output: 'Branch contained no changes beyond the base branch — nothing to commit.',
+    };
+  }
+
+  const commit = await gitOrThrow(cwd, ['commit', '-m', params.message], 'git commit');
+  const deleted = params.deleteBranch !== false ? await git(cwd, ['branch', '-D', branch]) : null;
+
+  return {
+    merged: true,
+    conflict: false,
+    commitSha: parseCommitSha(commit.stdout),
+    branchDeleted: deleted?.exitCode === 0,
+    baseBranch,
+    output: commit.stdout,
+  };
+}
+
+/** Hard-reset the tree to a ref. Only ever called after a quarantine save. */
+async function gitResetHard(params: { workspacePath: string; ref: string }) {
+  const cwd = path.resolve(params.workspacePath);
+  const ref = assertSafeGitRef(params.ref, 'ref');
+  await gitOrThrow(cwd, ['reset', '--hard', ref], 'git reset --hard');
+  const cleaned = await git(cwd, ['clean', '-fd']);
+  return { ref, cleaned: cleaned.stdout };
+}
+
 async function handleRequest(request: http.IncomingMessage, response: http.ServerResponse) {
   if (request.headers['x-vela-helper-secret'] !== SECRET) {
     sendJson(response, 401, { ok: false, error: 'Unauthorized helper request' });
@@ -927,6 +1117,13 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
         throw new Error('workspacePath is required');
       }
       const args = ['diff'];
+      // A base/head pair reviews exactly one task branch's work
+      // (`base...head`); without it this is the live working-tree diff.
+      if (body.baseRef !== undefined || body.headRef !== undefined) {
+        const baseRef = assertSafeGitRef(body.baseRef, 'baseRef');
+        const headRef = assertSafeGitRef(body.headRef, 'headRef');
+        args.push(`${baseRef}...${headRef}`);
+      }
       if (typeof body.relativePath === 'string' && body.relativePath) {
         args.push('--', body.relativePath);
       }
@@ -1006,6 +1203,89 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
       });
       if (result.exitCode !== 0) throw new Error(result.stderr || 'git checkout failed');
       sendJson(response, 200, { ok: true, data: { stdout: result.stdout || result.stderr } });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/workspace/git-branch-list') {
+      if (typeof body.workspacePath !== 'string') {
+        throw new Error('workspacePath is required');
+      }
+      const cwd = path.resolve(body.workspacePath);
+      const args = ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate'];
+      if (body.prefix !== undefined) {
+        args.push(`refs/heads/${assertSafeGitRef(body.prefix, 'prefix')}*`);
+      } else {
+        args.push('refs/heads/');
+      }
+      const result = await gitOrThrow(cwd, args, 'git for-each-ref');
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          branches: result.stdout.split('\n').map((line) => line.trim()).filter(Boolean),
+          current: await currentBranch(cwd),
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/workspace/git-branch-ensure') {
+      if (typeof body.workspacePath !== 'string') {
+        throw new Error('workspacePath is required');
+      }
+      sendJson(response, 200, {
+        ok: true,
+        data: await gitBranchEnsure({
+          workspacePath: body.workspacePath,
+          branch: body.branch as string,
+          startPoint: typeof body.startPoint === 'string' ? body.startPoint : undefined,
+        }),
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/workspace/git-branch-save') {
+      if (typeof body.workspacePath !== 'string') {
+        throw new Error('workspacePath is required');
+      }
+      sendJson(response, 200, {
+        ok: true,
+        data: await gitBranchSave({
+          workspacePath: body.workspacePath,
+          branch: body.branch as string,
+          message: body.message as string,
+        }),
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/workspace/git-merge-squash') {
+      if (typeof body.workspacePath !== 'string') {
+        throw new Error('workspacePath is required');
+      }
+      sendJson(response, 200, {
+        ok: true,
+        data: await gitMergeSquash({
+          workspacePath: body.workspacePath,
+          branch: body.branch as string,
+          baseBranch: body.baseBranch as string,
+          message: body.message as string,
+          deleteBranch: body.deleteBranch !== false,
+        }),
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/workspace/git-reset-hard') {
+      if (typeof body.workspacePath !== 'string') {
+        throw new Error('workspacePath is required');
+      }
+      sendJson(response, 200, {
+        ok: true,
+        data: await gitResetHard({
+          workspacePath: body.workspacePath,
+          ref: body.ref as string,
+        }),
+      });
       return;
     }
 

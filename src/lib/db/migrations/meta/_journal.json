@@ -71,6 +71,13 @@
       "when": 1787383230329,
       "tag": "0009_loud_cobalt_man",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787384402642,
+      "tag": "0010_colorful_midnight",
+      "breakpoints": true
     }
   ]
 }

@@ -147,6 +147,22 @@ export const tasks = pgTable('tasks', {
   index('idx_tasks_open_unlocked').on(table.status, table.projectId),
 ]);
 
+// ─── task_dependencies ────────────────────────────────────────────
+// Ordering of a backlog as data, not as status. A join table (rather than an
+// array column) so both directions query cleanly: "what am I waiting on" and
+// "who is waiting on me". Checkout eligibility is computed from these rows
+// every time, so it cannot drift the way status-flipping on completion would.
+export const taskDependencies = pgTable('task_dependencies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taskId: uuid('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  dependsOnTaskId: uuid('depends_on_task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('uq_task_dependency').on(table.taskId, table.dependsOnTaskId),
+  index('idx_task_dependencies_task').on(table.taskId),
+  index('idx_task_dependencies_depends_on').on(table.dependsOnTaskId),
+]);
+
 // ─── task_events ──────────────────────────────────────────────────
 export const taskEvents = pgTable('task_events', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -258,6 +274,21 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
   parentTask: one(tasks, { fields: [tasks.parentTaskId], references: [tasks.id], relationName: 'taskParent' }),
   subtasks: many(tasks, { relationName: 'taskParent' }),
   events: many(taskEvents),
+  dependencies: many(taskDependencies, { relationName: 'dependentTask' }),
+  dependents: many(taskDependencies, { relationName: 'prerequisiteTask' }),
+}));
+
+export const taskDependenciesRelations = relations(taskDependencies, ({ one }) => ({
+  task: one(tasks, {
+    fields: [taskDependencies.taskId],
+    references: [tasks.id],
+    relationName: 'dependentTask',
+  }),
+  dependsOnTask: one(tasks, {
+    fields: [taskDependencies.dependsOnTaskId],
+    references: [tasks.id],
+    relationName: 'prerequisiteTask',
+  }),
 }));
 
 export const taskEventsRelations = relations(taskEvents, ({ one }) => ({
@@ -291,6 +322,9 @@ export type NewSkill = typeof skills.$inferInsert;
 
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
+
+export type TaskDependency = typeof taskDependencies.$inferSelect;
+export type NewTaskDependency = typeof taskDependencies.$inferInsert;
 
 export type TaskEvent = typeof taskEvents.$inferSelect;
 export type NewTaskEvent = typeof taskEvents.$inferInsert;

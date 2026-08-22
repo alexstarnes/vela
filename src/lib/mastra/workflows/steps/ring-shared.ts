@@ -74,6 +74,10 @@ export const synthesisSchema = z.object({
       description: z.string().min(1),
       acceptance_criteria: z.array(z.string().min(1)).min(1),
       source_findings: z.array(z.string()),
+      // Indices of sibling stories that must land first. An ordering hint,
+      // not a contract: out-of-range indices, self-references, and cycles are
+      // pruned at task creation rather than failing the ring.
+      depends_on: z.array(z.number().int()).default([]),
     }),
   ),
   reconciliation: z.array(
@@ -199,7 +203,8 @@ Return ONE fenced json code block and nothing else after it:
       "title": "<user story title>",
       "description": "<story with who/what/why>",
       "acceptance_criteria": ["<testable criterion>", "..."],
-      "source_findings": ["<reviewer>/<n>", "..."]
+      "source_findings": ["<reviewer>/<n>", "..."],
+      "depends_on": [<indices of sibling stories that must land first>]
     }
   ],
   "reconciliation": [
@@ -222,7 +227,13 @@ Return ONE fenced json code block and nothing else after it:
 
 Finding references use the exact form "<reviewer name>/<finding number>" with 1-based numbering
 in each reviewer's submission order (e.g. "PRD Auditor/3"). EVERY finding from every reviewer
-must appear in reconciliation exactly once — 100% accounting is asserted programmatically.`;
+must appear in reconciliation exactly once — 100% accounting is asserted programmatically.
+
+Order the backlog for a solo builder working one story at a time. Name each story's
+prerequisites in "depends_on" as 0-based indices into the backlog array you are emitting
+(a story that presumes code another story creates depends on it). Most stories should have
+0-2 prerequisites; use [] for anything that can start immediately. Do not describe ordering
+in prose alone — the indices are what the scheduler reads.`;
 
 export function buildSynthesizerContext(params: {
   roleSkillMd: string;

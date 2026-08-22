@@ -154,8 +154,73 @@ export async function getWorkspaceGitStatus(params: {
 export async function getWorkspaceGitDiff(params: {
   workspacePath: string;
   relativePath?: string;
+  /** Review exactly one branch's work: `git diff baseRef...headRef`. */
+  baseRef?: string;
+  headRef?: string;
 }): Promise<{ stdout: string }> {
   return callHelper<{ stdout: string }>('/workspace/git-diff', 'POST', params);
+}
+
+// ─── Branch lifecycle ──────────────────────────────────────────────
+//
+// The branch is the unit of work and the tree is disposable: quarantine
+// whatever a previous run left behind, run each task on its own branch,
+// commit on review-pass, squash-merge on operator approve.
+
+export async function listWorkspaceGitBranches(params: {
+  workspacePath: string;
+  /** Ref prefix, e.g. `vela/quarantine/` — omit to list every branch. */
+  prefix?: string;
+}): Promise<{ branches: string[]; current: string | null }> {
+  return callHelper<{ branches: string[]; current: string | null }>(
+    '/workspace/git-branch-list',
+    'POST',
+    params,
+  );
+}
+
+/** Check out `branch`, creating it from `startPoint` only if it is new. */
+export async function ensureWorkspaceGitBranch(params: {
+  workspacePath: string;
+  branch: string;
+  startPoint?: string;
+}): Promise<{ branch: string; created: boolean; previousBranch: string | null; switched: boolean }> {
+  return callHelper('/workspace/git-branch-ensure', 'POST', params);
+}
+
+/** Move the working tree onto `branch` and commit it. Clean tree → committed: false. */
+export async function saveWorkspaceGitBranch(params: {
+  workspacePath: string;
+  branch: string;
+  message: string;
+}): Promise<{ branch: string; committed: boolean; commitSha: string | null; created: boolean }> {
+  return callHelper('/workspace/git-branch-save', 'POST', params);
+}
+
+/** Squash-merge a task branch into base. Conflicts return `conflict: true`, never throw. */
+export async function squashMergeWorkspaceGitBranch(params: {
+  workspacePath: string;
+  branch: string;
+  baseBranch: string;
+  message: string;
+  deleteBranch?: boolean;
+}): Promise<{
+  merged: boolean;
+  conflict: boolean;
+  commitSha: string | null;
+  branchDeleted: boolean;
+  baseBranch: string;
+  output: string;
+}> {
+  return callHelper('/workspace/git-merge-squash', 'POST', params);
+}
+
+/** Hard-reset the tree. Only ever called after the quarantine save. */
+export async function resetWorkspaceGitHard(params: {
+  workspacePath: string;
+  ref: string;
+}): Promise<{ ref: string; cleaned: string }> {
+  return callHelper('/workspace/git-reset-hard', 'POST', params);
 }
 
 export async function checkoutWorkspaceGitRef(params: {

@@ -1,5 +1,6 @@
 import { createWorkflow } from '@mastra/core/workflows';
 import { classifyTaskStep } from './steps/classify';
+import { prepareWorkspaceStep } from './steps/prepare-workspace';
 import { diagnoseDebugTaskStep } from './steps/debug-diagnostics';
 import { generateDebugHypothesesStep } from './steps/debug-hypotheses';
 import { selectDebugRootCauseStep } from './steps/debug-root-cause';
@@ -16,6 +17,7 @@ export const debugWorkflow = createWorkflow({
   inputSchema: workflowRunInputSchema,
   outputSchema: finalizedTaskSchema,
 })
+  .then(prepareWorkspaceStep)
   .then(classifyTaskStep)
   .then(generateDebugHypothesesStep)
   .then(diagnoseDebugTaskStep)

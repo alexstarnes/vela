@@ -130,6 +130,16 @@ export function createUpdateTaskStatusTool(ctx: ToolContext) {
         const fromStatus = task.status as TaskStatus;
         const toStatus = input.status as TaskStatus;
 
+        // The state machine allows cancelled → backlog/open so an operator can
+        // undo a cancel. That is an operator's call, never an agent's: an agent
+        // whose task was cancelled mid-run must not reopen it and carry on.
+        if (fromStatus === 'cancelled') {
+          return {
+            success: false,
+            message: 'This task was cancelled. Only a human operator can reopen it — stop work on it.',
+          };
+        }
+
         assertValidTransition(fromStatus, toStatus);
 
         await db.update(tasks).set({ status: toStatus, updatedAt: new Date() }).where(eq(tasks.id, ctx.taskId));

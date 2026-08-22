@@ -1,13 +1,14 @@
 'use server';
 
 import { db } from '@/lib/db';
-import { tasks, taskEvents } from '@/lib/db/schema';
-import { eq } from 'drizzle-orm';
+import { projects, tasks, taskEvents } from '@/lib/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
-import { assertValidTransition, type TaskStatus } from '@/lib/tasks/state-machine';
+import { assertValidTransition, isValidTransition, type TaskStatus } from '@/lib/tasks/state-machine';
 import { logTaskEvent } from '@/lib/events/logger';
 import { executeHeartbeatForTask } from '@/lib/mastra/heartbeat';
+import { mergeTaskBranch } from '@/lib/workspace/branch-lifecycle';
 import type { ActionResult } from './projects';
 
 const CreateTaskSchema = z.object({
@@ -141,9 +142,40 @@ export async function transitionTask(
     };
   }
 
+  // Operator approve (review → done) lands the task branch on base as one
+  // squash commit. A conflict is not a done task: the transition redirects to
+  // waiting_for_human with the git output already logged as a task event.
+  // `Request changes` and `Cancel` deliberately leave the branch in place —
+  // one for the next rework attempt, the other for forensics.
+  let effectiveStatus: TaskStatus = targetStatus;
+  let effectiveReason = reason ?? null;
+
+  if (fromStatus === 'review' && targetStatus === 'done') {
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, task.projectId),
+    });
+
+    if (project?.workspacePath) {
+      const merge = await mergeTaskBranch({ task, project, agentId });
+
+      if (merge.status === 'conflict' || merge.status === 'failed') {
+        effectiveStatus = 'waiting_for_human';
+        effectiveReason = merge.reason;
+      } else if (merge.commitSha) {
+        effectiveReason = `${effectiveReason ? `${effectiveReason} · ` : ''}Squash-merged ${merge.branch} into ${merge.baseBranch} as ${merge.commitSha}.`;
+      }
+    }
+  }
+
   await db
     .update(tasks)
-    .set({ status: toStatus, updatedAt: new Date() })
+    .set({
+      status: effectiveStatus,
+      updatedAt: new Date(),
+      // A cancelled task must not stay checked out — the lock would block the
+      // row forever, since nothing will come back to release it.
+      ...(effectiveStatus === 'cancelled' ? { lockedBy: null, lockedAt: null } : {}),
+    })
     .where(eq(tasks.id, id));
 
   // Append status_change event (append-only)
@@ -151,13 +183,153 @@ export async function transitionTask(
     taskId: id,
     agentId,
     eventType: 'status_change',
-    payload: { from: fromStatus, to: toStatus, reason: reason ?? null },
+    payload: { from: fromStatus, to: effectiveStatus, reason: effectiveReason },
   });
 
   revalidatePath('/tasks');
   revalidatePath(`/tasks/${id}`);
   revalidatePath('/activity');
   return { success: true, data: undefined };
+}
+
+const BulkTransitionTasksSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1, 'Select at least one task').max(200),
+  status: z.enum([
+    'backlog',
+    'open',
+    'in_progress',
+    'review',
+    'done',
+    'waiting_for_human',
+    'blocked',
+    'cancelled',
+  ]),
+  agentId: z.string().uuid().optional(),
+  reason: z.string().max(500).optional(),
+});
+
+export interface BulkTransitionSummary {
+  /** Tasks that actually moved. */
+  updated: { id: string; title: string; from: TaskStatus }[];
+  /** Tasks left alone, with the reason the state machine (or a race) refused. */
+  skipped: { id: string; title: string; reason: string }[];
+}
+
+/**
+ * Apply one status transition across many tasks.
+ *
+ * Deliberately partial-success: a selection that mixes cancellable and
+ * already-cancelled tasks moves what it can and reports the rest, rather than
+ * failing the whole batch. Each distinct source status gets its own guarded
+ * UPDATE (`WHERE id IN (...) AND status = <from>`) so a task that changed
+ * underneath us — an agent finishing mid-click — is skipped, not clobbered.
+ *
+ * Does NOT route through transitionTask's review → done merge path; bulk is
+ * cancel-shaped work, and squash-merging a batch of branches behind one click
+ * is not something an operator should be able to do by accident.
+ */
+export async function bulkTransitionTasks(
+  input: unknown
+): Promise<ActionResult<BulkTransitionSummary>> {
+  const parsed = BulkTransitionTasksSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues.map((e: { message: string }) => e.message).join('; ') };
+  }
+
+  const { ids, status: toStatus, agentId, reason } = parsed.data;
+  const targetStatus = toStatus as TaskStatus;
+
+  if (targetStatus === 'done') {
+    return {
+      success: false,
+      error: 'Approving to "done" runs a branch merge per task — do that one task at a time.',
+    };
+  }
+
+  const rows = await db.query.tasks.findMany({
+    where: inArray(tasks.id, ids),
+    columns: { id: true, title: true, status: true, projectId: true },
+  });
+
+  const found = new Set(rows.map((r) => r.id));
+  const skipped: BulkTransitionSummary['skipped'] = ids
+    .filter((id) => !found.has(id))
+    .map((id) => ({ id, title: id, reason: 'Task not found' }));
+
+  // Group the eligible tasks by their current status so each UPDATE can guard
+  // on the exact from-status it validated.
+  const byFromStatus = new Map<TaskStatus, { id: string; title: string }[]>();
+
+  for (const row of rows) {
+    const fromStatus = row.status as TaskStatus;
+
+    if (fromStatus === targetStatus) {
+      skipped.push({ id: row.id, title: row.title, reason: `Already ${targetStatus.replace(/_/g, ' ')}` });
+      continue;
+    }
+    if (!isValidTransition(fromStatus, targetStatus)) {
+      skipped.push({
+        id: row.id,
+        title: row.title,
+        reason: `Cannot go ${fromStatus.replace(/_/g, ' ')} → ${targetStatus.replace(/_/g, ' ')}`,
+      });
+      continue;
+    }
+
+    const bucket = byFromStatus.get(fromStatus) ?? [];
+    bucket.push({ id: row.id, title: row.title });
+    byFromStatus.set(fromStatus, bucket);
+  }
+
+  const updated: BulkTransitionSummary['updated'] = [];
+
+  for (const [fromStatus, bucket] of byFromStatus) {
+    const bucketIds = bucket.map((t) => t.id);
+
+    const changed = await db
+      .update(tasks)
+      .set({
+        status: targetStatus,
+        updatedAt: new Date(),
+        // See transitionTask: a cancelled task must not stay checked out.
+        ...(targetStatus === 'cancelled' ? { lockedBy: null, lockedAt: null } : {}),
+      })
+      .where(and(inArray(tasks.id, bucketIds), eq(tasks.status, fromStatus)))
+      .returning({ id: tasks.id });
+
+    const changedIds = new Set(changed.map((c) => c.id));
+
+    for (const t of bucket) {
+      if (changedIds.has(t.id)) {
+        updated.push({ ...t, from: fromStatus });
+      } else {
+        skipped.push({ id: t.id, title: t.title, reason: 'Status changed while the batch ran' });
+      }
+    }
+  }
+
+  // Append-only history, same shape a single-task transition writes.
+  await Promise.all(
+    updated.map((t) =>
+      logTaskEvent({
+        taskId: t.id,
+        agentId,
+        eventType: 'status_change',
+        payload: { from: t.from, to: targetStatus, reason: reason ?? 'Bulk action' },
+      })
+    )
+  );
+
+  if (updated.length > 0) {
+    revalidatePath('/tasks');
+    revalidatePath('/activity');
+    for (const t of updated) revalidatePath(`/tasks/${t.id}`);
+    for (const projectId of new Set(rows.map((r) => r.projectId))) {
+      revalidatePath(`/projects/${projectId}`);
+    }
+  }
+
+  return { success: true, data: { updated, skipped } };
 }
 
 const RunTaskHeartbeatSchema = z.object({

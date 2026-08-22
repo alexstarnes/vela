@@ -6,7 +6,7 @@
   "scripts": {
     "test": "npm run test:orchestration && npm run eval:routing",
     "test:unit": "npm run test:orchestration",
-    "test:orchestration": "node --import tsx --test src/lib/orchestration/*.test.ts src/lib/mastra/evals/*.test.ts",
+    "test:orchestration": "node --import tsx --test src/lib/orchestration/*.test.ts src/lib/tasks/*.test.ts src/lib/mastra/evals/*.test.ts",
     "eval:routing": "tsx scripts/run-routing-evals.ts",
     "dev": "next dev",
     "dev:mastra": "mastra dev",

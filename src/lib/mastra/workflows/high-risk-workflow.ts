@@ -1,5 +1,6 @@
 import { createWorkflow } from '@mastra/core/workflows';
 import { classifyTaskStep } from './steps/classify';
+import { prepareWorkspaceStep } from './steps/prepare-workspace';
 import { finalizeTaskStep } from './steps/finalize';
 import { humanApprovalStep } from './steps/human-approval';
 import { implementTaskStep } from './steps/implement';
@@ -16,6 +17,7 @@ export const highRiskWorkflow = createWorkflow({
   inputSchema: workflowRunInputSchema,
   outputSchema: finalizedTaskSchema,
 })
+  .then(prepareWorkspaceStep)
   .then(classifyTaskStep)
   .then(repoMapTaskStep)
   .then(planTaskStep)

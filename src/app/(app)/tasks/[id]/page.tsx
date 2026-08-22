@@ -12,6 +12,7 @@ import { ApprovalPanel } from './approval-panel';
 import { AttachDocument } from './attach-document';
 import { ReviewPanel } from './review-panel';
 import { listTaskDocuments } from '@/lib/documents';
+import { getTaskDependencies } from '@/lib/tasks/dependencies';
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   backlog: { bg: '#6B665A20', fg: '#8E897B' },
@@ -50,6 +51,12 @@ const EVENT_ICONS: Record<string, { icon: string; color: string }> = {
   routing_tuning: { icon: '≋', color: '#6B665A' },
   scorecard: { icon: '∑', color: '#6B665A' },
   document_added: { icon: '▣', color: '#F5A623' },
+  workspace_quarantine: { icon: '⚑', color: '#C27D1A' },
+  workspace_prepared: { icon: '⌥', color: '#6B665A' },
+  workspace_commit: { icon: '⎘', color: '#3D8B5C' },
+  workspace_merge: { icon: '⤳', color: '#3D8B5C' },
+  workspace_merge_conflict: { icon: '⚠', color: '#C4413A' },
+  dependency_graph: { icon: '⋔', color: '#4A7AB5' },
 };
 
 export default async function TaskDetailPage({
@@ -59,14 +66,16 @@ export default async function TaskDetailPage({
 }) {
   const { id } = await params;
 
-  const [task, events, subtasks, agents, taskApprovals, taskDocuments] = await Promise.all([
-    getTask(id),
-    getTaskEvents(id),
-    getSubtasks(id),
-    listAgents(),
-    getTaskApprovals(id),
-    listTaskDocuments(id),
-  ]);
+  const [task, events, subtasks, agents, taskApprovals, taskDocuments, dependencies] =
+    await Promise.all([
+      getTask(id),
+      getTaskEvents(id),
+      getSubtasks(id),
+      listAgents(),
+      getTaskApprovals(id),
+      listTaskDocuments(id),
+      getTaskDependencies(id),
+    ]);
 
   if (!task) notFound();
 
@@ -164,7 +173,7 @@ export default async function TaskDetailPage({
                 documents={taskDocuments}
                 approvals={taskApprovals}
                 events={events}
-                workspacePath={task.project?.workspacePath ?? null}
+                project={task.project ?? null}
               />
             )}
             {task.description && (
@@ -232,6 +241,27 @@ export default async function TaskDetailPage({
                     content = `Routed to ${payload.workflow_id ?? 'workflow'}`;
                   } else if (event.eventType === 'mode_selection' && payload) {
                     content = `Mode ${payload.mode}${payload.score != null ? ` (score ${payload.score}/8)` : ''}${payload.effective_tier != null ? ` · effective tier ${payload.effective_tier}` : ''}`;
+                  } else if (event.eventType === 'workspace_quarantine' && payload) {
+                    content = `Uncommitted leftovers parked on ${payload.branch} — recover with \`${payload.recover_with}\``;
+                  } else if (event.eventType === 'workspace_prepared' && payload) {
+                    content = `Working on ${payload.branch} (from ${payload.base_branch})${payload.branch_created ? ' — branch created' : ''}`;
+                  } else if (event.eventType === 'workspace_commit' && payload) {
+                    content = payload.committed
+                      ? `Committed to ${payload.branch} as ${payload.commit_sha ?? 'unknown'}; tree returned to ${payload.base_branch}`
+                      : `Nothing to commit on ${payload.branch}; tree returned to ${payload.base_branch}`;
+                  } else if (event.eventType === 'workspace_merge' && payload) {
+                    content = payload.commit_sha
+                      ? `Squash-merged ${payload.branch} into ${payload.base_branch} as ${payload.commit_sha}${payload.branch_deleted ? ' (branch deleted)' : ''}`
+                      : `${payload.branch} carried nothing beyond ${payload.base_branch}`;
+                  } else if (event.eventType === 'workspace_merge_conflict' && payload) {
+                    content = `Merge conflict landing ${payload.branch} on ${payload.base_branch} — the branch is intact. ${String(payload.output ?? '').slice(0, 400)}`;
+                  } else if (event.eventType === 'dependency_graph' && payload) {
+                    content =
+                      payload.action === 'edge_removed'
+                        ? `Dependency removed — no longer waits on ${payload.depends_on_title ?? payload.depends_on_task_id}`
+                        : payload.action === 'edge_added'
+                          ? `Dependency added — now waits on ${payload.depends_on_task_id}`
+                          : `${payload.edges_written ?? 0} dependency edge(s) written · ${payload.dependency_free_stories ?? 0} story(ies) ready immediately${Array.isArray(payload.warnings) && payload.warnings.length > 0 ? ` · ${payload.warnings.length} hint(s) dropped` : ''}`;
                   } else if (event.eventType === 'document_added' && payload) {
                     content = `Document '${payload.key}' revision ${payload.revision} attached (${Number(payload.length ?? 0).toLocaleString()} chars)${payload.routes_to_critique_ring ? ' — routes to critique ring' : ''}`;
                   } else if (event.eventType === 'model_escalation' && payload) {
@@ -344,6 +374,54 @@ export default async function TaskDetailPage({
               </p>
             </div>
           </div>
+
+          {/* Waiting on — unmet prerequisites gate this task's checkout */}
+          {dependencies.length > 0 && (
+            <div>
+              <p
+                className="text-[9px] font-mono uppercase tracking-wider mb-2"
+                style={{ color: 'var(--stone-500)' }}
+              >
+                Waiting on
+              </p>
+              <div className="space-y-1">
+                {dependencies.map((dep) => {
+                  const depSc = STATUS_COLORS[dep.dependsOnStatus] ?? STATUS_COLORS.backlog;
+                  return (
+                    <Link
+                      key={dep.dependsOnTaskId}
+                      href={`/tasks/${dep.dependsOnTaskId}`}
+                      className="flex items-center gap-1.5 group"
+                      title={
+                        dep.satisfied
+                          ? 'Satisfied — this prerequisite is done'
+                          : `Blocks checkout until done (currently ${dep.dependsOnStatus.replace(/_/g, ' ')})`
+                      }
+                    >
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ background: dep.satisfied ? '#3D8B5C' : depSc.fg }}
+                      />
+                      <span
+                        className="text-[10px] group-hover:underline"
+                        style={{
+                          color: dep.satisfied ? 'var(--stone-600)' : 'var(--stone-400)',
+                          textDecorationLine: dep.satisfied ? 'line-through' : undefined,
+                        }}
+                      >
+                        {dep.dependsOnTitle}
+                      </span>
+                    </Link>
+                  );
+                })}
+              </div>
+              {dependencies.some((dep) => !dep.satisfied) && (
+                <p className="mt-1.5 text-[9px] leading-3" style={{ color: 'var(--stone-600)' }}>
+                  Not eligible for checkout until these are done.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Subtasks */}
           {subtasks.length > 0 && (

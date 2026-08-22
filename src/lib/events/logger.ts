@@ -30,7 +30,13 @@ export type EventType =
   | 'ring_context'
   | 'ring_findings'
   | 'ring_reconciliation'
-  | 'document_added';
+  | 'document_added'
+  | 'workspace_quarantine'
+  | 'workspace_prepared'
+  | 'workspace_commit'
+  | 'workspace_merge'
+  | 'workspace_merge_conflict'
+  | 'dependency_graph';
 
 export interface LogEventParams {
   taskId: string;

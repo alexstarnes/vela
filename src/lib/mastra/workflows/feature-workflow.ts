@@ -1,5 +1,6 @@
 import { createWorkflow, createStep } from '@mastra/core/workflows';
 import { classifyTaskStep } from './steps/classify';
+import { prepareWorkspaceStep } from './steps/prepare-workspace';
 import { approvedTaskSchema, finalizedTaskSchema, plannedTaskSchema, workflowRunInputSchema } from './steps/shared';
 import { finalizeTaskStep } from './steps/finalize';
 import { repoMapTaskStep } from './steps/repo-map';
@@ -28,6 +29,7 @@ export const featureWorkflow = createWorkflow({
   inputSchema: workflowRunInputSchema,
   outputSchema: finalizedTaskSchema,
 })
+  .then(prepareWorkspaceStep)
   .then(classifyTaskStep)
   .then(repoMapTaskStep)
   .then(planTaskStep)

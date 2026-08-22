@@ -1,14 +1,15 @@
 import { createStep } from '@mastra/core/workflows';
 import { db } from '@/lib/db';
-import { tasks } from '@/lib/db/schema';
+import { projects, tasks } from '@/lib/db/schema';
 import { logTaskEvent } from '@/lib/events/logger';
 import { buildTaskRoutingScorecard } from '@/lib/mastra/analytics/routing-scorecards';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { finalizedTaskSchema, synthesizedTaskSchema } from './shared';
 import {
   incrementTaskFailureCount,
   resetTaskFailureCount,
 } from '@/lib/orchestration/escalation';
+import { commitTaskBranch } from '@/lib/workspace/branch-lifecycle';
 
 /**
  * Failure count at which a requeued task stops retrying and waits for a human.
@@ -47,13 +48,37 @@ export const finalizeTaskStep = createStep({
       }
     }
 
-    await db
+    // An operator can cancel a task while its run is still in flight (single or
+    // bulk cancel). The operator's decision must win over the run it cancelled:
+    // guard the write so a late finalize cannot resurrect the task into
+    // review/open/waiting_for_human. Reopening is the operator's call, via the
+    // cancelled → backlog transition — never a side effect of a finishing run.
+    const finalized = await db
       .update(tasks)
       .set({
         status: finalStatus,
         updatedAt: new Date(),
       })
-      .where(eq(tasks.id, task.id));
+      .where(and(eq(tasks.id, task.id), ne(tasks.status, 'cancelled')))
+      .returning({ id: tasks.id });
+
+    if (finalized.length === 0) {
+      await logTaskEvent({
+        taskId: task.id,
+        agentId: inputData.agentId,
+        eventType: 'status_change',
+        payload: {
+          from: 'cancelled',
+          to: 'cancelled',
+          reason: `Run finished after the task was cancelled — "${finalStatus}" not applied.`,
+        },
+      });
+
+      return {
+        ...inputData,
+        finalStatus,
+      };
+    }
 
     await logTaskEvent({
       taskId: task.id,
@@ -68,6 +93,34 @@ export const finalizeTaskStep = createStep({
 
     if (finalStatus === 'review') {
       await resetTaskFailureCount(task.id);
+
+      // The hygiene moment (workspace plan A.3): the deliverable survives on
+      // the task branch and the shared tree returns to base, so the next task
+      // to run here starts clean and its reviewer sees only its own diff.
+      const project = await db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+      if (project) {
+        const commit = await commitTaskBranch({
+          task,
+          project,
+          agentId: inputData.agentId,
+        });
+        if (commit.status === 'failed') {
+          // Honest, not silent: the task still reaches review, but the
+          // operator is told the tree was not cleaned up behind it.
+          await logTaskEvent({
+            taskId: task.id,
+            agentId: inputData.agentId,
+            eventType: 'message',
+            payload: {
+              content:
+                `Work reached review but could not be committed to its branch: ${commit.reason}. ` +
+                'The working tree may still hold this task\'s changes.',
+            },
+          });
+        }
+      }
     }
 
     const scorecard = await buildTaskRoutingScorecard(task.id);

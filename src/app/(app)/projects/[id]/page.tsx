@@ -9,6 +9,10 @@ import Link from 'next/link';
 import { ChevronLeft } from 'lucide-react';
 import { ProjectDetailClient } from './project-detail-client';
 import { DevServerCard } from './dev-server-card';
+import { ProjectFlightView } from './flight-view';
+import { getProjectDependencyLinks } from '@/lib/tasks/dependencies';
+import { getWorkspaceOverview } from '@/lib/workspace/branch-lifecycle';
+import { ProjectTaskList } from './project-task-list';
 import type { ProjectConnectionStatus, ProjectSourceType } from '@/lib/db/schema';
 
 export default async function ProjectDetailPage({
@@ -17,14 +21,20 @@ export default async function ProjectDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [project, allTasks, allAgents, allSkills] = await Promise.all([
+  const [project, allTasks, allAgents, allSkills, dependencyLinks] = await Promise.all([
     getProject(id),
     listTasks({ projectId: id }),
     listAgents(),
     listSkills(id),
+    getProjectDependencyLinks(id),
   ]);
 
   if (!project) notFound();
+
+  // Helper round-trip — kept out of the Promise.all above because it needs
+  // the project row, and it must never block the page when the helper is down
+  // (getWorkspaceOverview reports the failure instead of throwing).
+  const workspace = await getWorkspaceOverview(project);
 
   const projectAgents = allAgents.filter((a) => a.projectId === id);
   const doneTasks = allTasks.filter((t) => t.status === 'done');
@@ -134,13 +144,16 @@ export default async function ProjectDetailPage({
           </div>
         )}
 
-        {/* Workspace */}
+        {/* Flight view: what is in flight, in what order, and what depends on what */}
+        <ProjectFlightView tasks={allTasks} links={dependencyLinks} workspace={workspace} />
+
+        {/* Connection details */}
         <div
           className="rounded-lg p-4 space-y-3"
           style={{ background: 'var(--dark-surface)', border: '1px solid var(--dark-border)' }}
         >
           <p className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--stone-500)' }}>
-            Workspace
+            Connection
           </p>
           {project.sourceType === 'manual' ? (
             <p className="text-sm" style={{ color: 'var(--stone-400)' }}>
@@ -191,7 +204,7 @@ export default async function ProjectDetailPage({
         <div>
           <div className="flex items-center justify-between mb-3">
             <p className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'var(--stone-500)' }}>
-              Tasks
+              All tasks
             </p>
             <Link
               href={`/tasks?projectId=${id}`}
@@ -201,24 +214,9 @@ export default async function ProjectDetailPage({
               View all
             </Link>
           </div>
-          <div className="space-y-2">
-            {allTasks.slice(0, 10).map((task) => (
-              <Link key={task.id} href={`/tasks/${task.id}`} className="block">
-                <div
-                  className="flex items-center justify-between px-3 py-2 rounded-md"
-                  style={{ background: 'var(--dark-surface)', border: '1px solid var(--dark-border)' }}
-                >
-                  <span className="text-sm" style={{ color: '#ECEAE4' }}>{task.title}</span>
-                  <StatusBadge status={task.status} />
-                </div>
-              </Link>
-            ))}
-            {allTasks.length === 0 && (
-              <p className="text-xs text-center py-4" style={{ color: 'var(--stone-500)' }}>
-                No tasks yet
-              </p>
-            )}
-          </div>
+          <ProjectTaskList
+            tasks={allTasks.slice(0, 10).map((t) => ({ id: t.id, title: t.title, status: t.status }))}
+          />
         </div>
 
         {/* Skills */}
@@ -305,24 +303,3 @@ function WorkspaceRow({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, { bg: string; fg: string }> = {
-    backlog: { bg: '#6B665A20', fg: '#8E897B' },
-    open: { bg: '#4A7AB520', fg: '#4A7AB5' },
-    in_progress: { bg: '#F5A62320', fg: '#F5A623' },
-    review: { bg: '#7C3AED20', fg: '#7C3AED' },
-    done: { bg: '#3D8B5C20', fg: '#3D8B5C' },
-    waiting_for_human: { bg: '#C27D1A20', fg: '#C27D1A' },
-    blocked: { bg: '#C4413A20', fg: '#C4413A' },
-    cancelled: { bg: '#6B665A20', fg: '#6B665A' },
-  };
-  const c = colors[status] ?? { bg: '#6B665A20', fg: '#8E897B' };
-  return (
-    <span
-      className="text-[10px] font-mono px-1.5 py-0.5 rounded"
-      style={{ background: c.bg, color: c.fg }}
-    >
-      {status.replace(/_/g, ' ')}
-    </span>
-  );
-}

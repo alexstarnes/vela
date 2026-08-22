@@ -12,14 +12,15 @@
 
 import { db } from '@/lib/db';
 import { tasks, agents, heartbeats, approvals, projects, modelConfigs } from '@/lib/db/schema';
-import { eq, and, isNull, sql } from 'drizzle-orm';
+import { eq, and, ne, sql } from 'drizzle-orm';
 import { logTaskEvent } from '@/lib/events/logger';
 import { createMastraAgent } from './agent-factory';
 import { getFallbackModelForTier } from './router';
 import { getMastra } from './index';
 import { applyBudgetResetIfDue, checkBudgetPrecondition, spendBudget, recordBudgetRun } from '@/lib/governance/budget';
 import { LoopTracker, LoopDetectedError } from '@/lib/governance/loop-detector';
-import { checkoutWorkspaceGitRef } from '@/lib/helper/client';
+import { getTaskDependencies } from '@/lib/tasks/dependencies';
+import { prepareTaskWorkspace } from '@/lib/workspace/branch-lifecycle';
 import type { Task, Agent as DbAgent } from '@/lib/db/schema';
 import { classifyTaskMode } from '@/lib/orchestration/mode-classifier';
 import { taskHasPrdDocument } from '@/lib/documents';
@@ -35,6 +36,31 @@ function agentRequiresApproval(dbAgent: DbAgent): boolean {
 
 // ─── Internal helpers ─────────────────────────────────────────────
 
+/**
+ * Atomic task checkout.
+ *
+ * Two eligibility gates beyond "open and unlocked", both computed from data
+ * on every checkout so they cannot drift:
+ *
+ *   - per-project serialization: all tasks of a project share one working
+ *     tree, and git's checked-out state is repo-global, so a project with a
+ *     task already in_progress is skipped entirely. (Git *worktrees* would
+ *     allow real per-project parallelism; deliberately not today.)
+ *     The `NOT EXISTS` alone is not enough — under READ COMMITTED every
+ *     concurrent checkout reads the same pre-update snapshot and they all
+ *     pass it. Locking the *project* row (`FOR UPDATE OF p`) is what makes
+ *     the gate hold: the first checkout of a project holds that row for the
+ *     statement, and `SKIP LOCKED` makes rivals skip the project rather than
+ *     queue behind it, so they find no candidate instead of racing in.
+ *   - dependency ordering: a task whose prerequisites are not all `done`
+ *     is not eligible. Statuses stay honest — `open` means "wants to run" —
+ *     and cancelled prerequisites read as unsatisfied, which surfaces the
+ *     dependent in the flight view as needing an operator decision.
+ *
+ * ┌──────────────────────────────────────────────────────────────────┐
+ * │ KEEP IN SYNC with tests/load/checkout-contention.ts (CHECKOUT_SQL) │
+ * └──────────────────────────────────────────────────────────────────┘
+ */
 async function checkoutNextTask(agentId: string): Promise<Task | null> {
   const result = await db.execute(sql`
     UPDATE tasks
@@ -43,20 +69,32 @@ async function checkoutNextTask(agentId: string): Promise<Task | null> {
         locked_at = now(),
         updated_at = now()
     WHERE id = (
-      SELECT id FROM tasks
-      WHERE assigned_agent_id = ${agentId}
-        AND status = 'open'
-        AND locked_by IS NULL
+      SELECT t.id FROM tasks t
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.assigned_agent_id = ${agentId}
+        AND t.status = 'open'
+        AND t.locked_by IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM tasks busy
+          WHERE busy.project_id = t.project_id
+            AND busy.status = 'in_progress'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM task_dependencies d
+          JOIN tasks prereq ON prereq.id = d.depends_on_task_id
+          WHERE d.task_id = t.id
+            AND prereq.status <> 'done'
+        )
       ORDER BY
-        CASE priority
+        CASE t.priority
           WHEN 'urgent' THEN 0
           WHEN 'high'   THEN 1
           WHEN 'medium' THEN 2
           WHEN 'low'    THEN 3
         END ASC,
-        created_at ASC
+        t.created_at ASC
       LIMIT 1
-      FOR UPDATE SKIP LOCKED
+      FOR UPDATE OF t, p SKIP LOCKED
     )
     RETURNING *
   `);
@@ -64,6 +102,33 @@ async function checkoutNextTask(agentId: string): Promise<Task | null> {
   const rows = result as unknown as Task[];
   if (!rows || rows.length === 0) return null;
   return rows[0];
+}
+
+/**
+ * The same two gates for the direct-dispatch path (manual run, autostart).
+ * Returns a refusal reason, or null when the task may run.
+ */
+async function directDispatchBlockReason(task: Task): Promise<string | null> {
+  const busy = await db.query.tasks.findFirst({
+    where: and(
+      eq(tasks.projectId, task.projectId),
+      eq(tasks.status, 'in_progress'),
+      ne(tasks.id, task.id),
+    ),
+    columns: { id: true, title: true },
+  });
+  if (busy) {
+    return `Another task in this project is already running ("${busy.title}"). Tasks of one project share a working tree and run one at a time.`;
+  }
+
+  const blocking = (await getTaskDependencies(task.id)).filter((link) => !link.satisfied);
+  if (blocking.length > 0) {
+    return `Waiting on ${blocking.length} unfinished prerequisite(s): ${blocking
+      .map((link) => `"${link.dependsOnTitle}" (${link.dependsOnStatus})`)
+      .join(', ')}.`;
+  }
+
+  return null;
 }
 
 async function releaseTaskLock(taskId: string): Promise<void> {
@@ -138,30 +203,21 @@ async function runAgentOnTask(
       throw new Error(msg);
     }
 
-    // Auto-create feature branch for implementation agents so they don't conflict on main
+    // Same quarantine-then-branch gate the workflow path runs: an unattended
+    // run must never start on a tree still holding someone else's work.
     const isOrchestrator = dbAgent.domain === 'meta' && /orchestrat/i.test(dbAgent.role);
     if (!isOrchestrator && project.workspacePath) {
-      const shortId = checkedOutTask.id.slice(0, 8);
-      const branchName = `vela/task-${shortId}`;
-      try {
-        await checkoutWorkspaceGitRef({
-          workspacePath: project.workspacePath,
-          ref: branchName,
-          createNew: true,
-        });
-        console.log(`[heartbeat] Created feature branch: ${branchName}`);
-      } catch {
-        // Branch may already exist from a previous attempt — try to check it out
-        try {
-          await checkoutWorkspaceGitRef({
-            workspacePath: project.workspacePath,
-            ref: branchName,
-          });
-          console.log(`[heartbeat] Checked out existing branch: ${branchName}`);
-        } catch (checkoutErr) {
-          console.warn(`[heartbeat] Could not create/checkout branch ${branchName}:`, checkoutErr);
-          // Non-fatal — agent can still work on whatever branch is current
-        }
+      const prepared = await prepareTaskWorkspace({
+        task: checkedOutTask,
+        project,
+        agentId: dbAgent.id,
+      });
+      if (prepared.status === 'failed') {
+        // Non-fatal on this path — the agent can still work on whatever
+        // branch is current, and prepareTaskWorkspace already logged why.
+        console.warn(`[heartbeat] Workspace preparation failed: ${prepared.reason}`);
+      } else {
+        console.log(`[heartbeat] ${prepared.reason}`);
       }
     }
   }
@@ -706,7 +762,7 @@ export async function executeHeartbeat(agentId: string): Promise<{
         await db
           .update(tasks)
           .set({ status: 'blocked', updatedAt: new Date() })
-          .where(eq(tasks.id, checkedOutTask.id));
+          .where(and(eq(tasks.id, checkedOutTask.id), ne(tasks.status, 'cancelled')));
 
         await logTaskEvent({
           taskId: checkedOutTask.id,
@@ -739,21 +795,26 @@ export async function executeHeartbeat(agentId: string): Promise<{
         });
 
         if (!(err instanceof LoopDetectedError)) {
-          await db
+          // Never requeue a task an operator cancelled mid-run, or the cancel
+          // silently undoes itself. Reopening is an explicit operator action.
+          const requeued = await db
             .update(tasks)
             .set({ status: 'open', updatedAt: new Date() })
-            .where(eq(tasks.id, checkedOutTask.id));
+            .where(and(eq(tasks.id, checkedOutTask.id), ne(tasks.status, 'cancelled')))
+            .returning({ id: tasks.id });
 
-          await logTaskEvent({
-            taskId: checkedOutTask.id,
-            agentId,
-            eventType: 'status_change',
-            payload: {
-              from: 'in_progress',
-              to: 'open',
-              reason: 'Run failed — requeued for retry',
-            },
-          });
+          if (requeued.length > 0) {
+            await logTaskEvent({
+              taskId: checkedOutTask.id,
+              agentId,
+              eventType: 'status_change',
+              payload: {
+                from: 'in_progress',
+                to: 'open',
+                reason: 'Run failed — requeued for retry',
+              },
+            });
+          }
         }
       } catch {
         console.error('[heartbeat] Failed to log error event');
@@ -846,24 +907,60 @@ export async function executeHeartbeatForTask(
       };
     }
 
-    // Atomically lock
-    const lockResult = await db
-      .update(tasks)
-      .set({
-        status: 'in_progress',
-        lockedBy: dbAgent.id,
-        lockedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(and(eq(tasks.id, taskId), isNull(tasks.lockedBy)))
-      .returning({ id: tasks.id });
+    // Serialization + dependency gates apply to direct dispatch too: two
+    // tasks of one project cannot share a working tree, branches or not, and
+    // a task whose prerequisites have not landed would build on a skeleton.
+    const blockReason = await directDispatchBlockReason(task);
+    if (blockReason) {
+      await completeHeartbeatRecord(heartbeatRecord.id, {
+        status: 'completed',
+        tasksProcessed: 0,
+      });
+      await logTaskEvent({
+        taskId,
+        agentId: dbAgent.id,
+        eventType: 'message',
+        payload: { content: `Run not started — ${blockReason}` },
+      });
+      return { success: false, error: blockReason };
+    }
+
+    // Atomically lock. The predicate carries the same per-project
+    // serialization the scheduled checkout enforces — and for the same reason
+    // it locks the project row: the block-reason check above reads a snapshot
+    // and two dispatches racing on one project would both pass it.
+    const lockResult = (await db.execute(sql`
+      UPDATE tasks
+      SET status = 'in_progress',
+          locked_by = ${dbAgent.id},
+          locked_at = now(),
+          updated_at = now()
+      WHERE id = (
+        SELECT t.id FROM tasks t
+        JOIN projects p ON p.id = t.project_id
+        WHERE t.id = ${taskId}
+          AND t.locked_by IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM tasks busy
+            WHERE busy.project_id = t.project_id
+              AND busy.status = 'in_progress'
+              AND busy.id <> t.id
+          )
+        FOR UPDATE OF t, p SKIP LOCKED
+      )
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
 
     if (lockResult.length === 0) {
       await completeHeartbeatRecord(heartbeatRecord.id, {
         status: 'completed',
         tasksProcessed: 0,
       });
-      return { success: false, error: 'Task is already locked by another process' };
+      return {
+        success: false,
+        error:
+          'Task could not be locked — it is already running, or another task in this project holds the working tree.',
+      };
     }
 
     try {
@@ -962,7 +1059,7 @@ export async function executeHeartbeatForTask(
           await db
             .update(tasks)
             .set({ status: 'blocked', updatedAt: new Date() })
-            .where(eq(tasks.id, taskId));
+            .where(and(eq(tasks.id, taskId), ne(tasks.status, 'cancelled')));
 
           await logTaskEvent({
             taskId,
@@ -992,21 +1089,25 @@ export async function executeHeartbeatForTask(
         });
 
         if (!(err instanceof LoopDetectedError)) {
-          await db
+          // Cancel wins over the run it interrupted — see the agent-loop path.
+          const requeued = await db
             .update(tasks)
             .set({ status: 'open', updatedAt: new Date() })
-            .where(eq(tasks.id, taskId));
+            .where(and(eq(tasks.id, taskId), ne(tasks.status, 'cancelled')))
+            .returning({ id: tasks.id });
 
-          await logTaskEvent({
-            taskId,
-            agentId: dbAgent.id,
-            eventType: 'status_change',
-            payload: {
-              from: 'in_progress',
-              to: 'open',
-              reason: 'Run failed — requeued for retry',
-            },
-          });
+          if (requeued.length > 0) {
+            await logTaskEvent({
+              taskId,
+              agentId: dbAgent.id,
+              eventType: 'status_change',
+              payload: {
+                from: 'in_progress',
+                to: 'open',
+                reason: 'Run failed — requeued for retry',
+              },
+            });
+          }
         }
       } catch {
         // swallow

@@ -7,6 +7,10 @@ import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
 import { logTaskEvent } from '@/lib/events/logger';
 import { assertValidTransition, type TaskStatus } from '@/lib/tasks/state-machine';
+import {
+  createTaskDependencies,
+  normalizeBacklogDependencies,
+} from '@/lib/tasks/dependencies';
 import type { ActionResult } from './projects';
 
 /**
@@ -143,6 +147,7 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
         description?: string;
         acceptance_criteria?: string[];
         source_findings?: string[];
+        depends_on?: number[] | null;
       }>;
       project_id?: string | null;
     } | null;
@@ -156,7 +161,9 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
         where: and(eq(agents.name, 'Supervisor'), eq(agents.agentKind, 'runtime')),
       });
 
-      let firstChildId: string | null = null;
+      // Two passes: insert every child first, then map the synthesizer's
+      // sibling indices onto real task ids and write the dependency edges.
+      const childIdByIndex: string[] = [];
       for (const item of payload.backlog) {
         const description = [
           item.description ?? '',
@@ -183,7 +190,7 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
             status: supervisor ? 'open' : 'backlog',
           })
           .returning({ id: tasks.id });
-        firstChildId ??= child.id;
+        childIdByIndex.push(child.id);
 
         await logTaskEvent({
           taskId: child.id,
@@ -197,6 +204,24 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
         });
       }
 
+      // Pass two: ordering. A dependent story that runs first against a
+      // skeleton honestly produces nothing, so the synthesizer's ordering
+      // hints become real edges the checkout gate enforces.
+      const { edges, warnings } = normalizeBacklogDependencies(payload.backlog);
+      const edgesWritten = await createTaskDependencies(
+        edges
+          .filter((edge) => childIdByIndex[edge.index] && childIdByIndex[edge.dependsOnIndex])
+          .map((edge) => ({
+            taskId: childIdByIndex[edge.index],
+            dependsOnTaskId: childIdByIndex[edge.dependsOnIndex],
+          })),
+      );
+
+      const blockedIndices = new Set(edges.map((edge) => edge.index));
+      const firstReadyIndex = childIdByIndex.findIndex(
+        (_, index) => !blockedIndices.has(index),
+      );
+
       await logTaskEvent({
         taskId: prdTask.id,
         agentId: approval.agentId,
@@ -208,10 +233,26 @@ export async function approveApproval(input: unknown): Promise<ActionResult> {
         },
       });
 
+      if (edges.length > 0 || warnings.length > 0) {
+        await logTaskEvent({
+          taskId: prdTask.id,
+          agentId: approval.agentId,
+          eventType: 'dependency_graph',
+          payload: {
+            approval_id: approvalId,
+            edges_proposed: edges.length,
+            edges_written: edgesWritten,
+            dependency_free_stories: childIdByIndex.length - blockedIndices.size,
+            warnings,
+          },
+        });
+      }
+
       // Autostart (opt-in per project, default off): kick a heartbeat for the
-      // first created child so an approved backlog starts building without
-      // waiting for a cron tick. Fire-and-forget — approval resolution must
-      // not block on (or fail with) the run it triggers.
+      // first *dependency-free* child so an approved backlog starts building
+      // without waiting for a cron tick. Fire-and-forget — approval
+      // resolution must not block on (or fail with) the run it triggers.
+      const firstChildId = firstReadyIndex >= 0 ? childIdByIndex[firstReadyIndex] : null;
       if (firstChildId) {
         const { projects } = await import('@/lib/db/schema');
         const project = await db.query.projects.findFirst({

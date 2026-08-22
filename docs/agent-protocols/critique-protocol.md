@@ -182,9 +182,30 @@ strawmans the other has made the decision while appearing to escalate it.
 1. **Revised document** — the original with accepted findings incorporated. Preserve the original
    as a prior revision; never overwrite history.
 2. **Proposed backlog** — user stories with acceptance criteria, each traceable to the findings that
-   produced or shaped it.
+   produced or shaped it, and each naming its prerequisites (see below).
 3. **Reconciliation record** — the accounting above.
 4. **Escalations** — where present.
+
+### Ordering the backlog
+
+Order it for a solo builder working one story at a time. Stories carry implicit ordering —
+"duplicate detection" presumes the save/import code a sibling story creates — and a dependent
+story that runs first against a skeleton honestly produces nothing.
+
+Name each story's prerequisites explicitly, as 0-based indices into the backlog you are
+emitting:
+
+```yaml
+backlog:
+  - title: <story>
+    depends_on: [<indices of stories that must land first>]
+```
+
+Most stories should have **0–2** prerequisites; `[]` means it can start immediately. Prose about
+sequencing is not enough — the indices are what the scheduler reads, and a story with no
+`depends_on` is treated as ready to run. Bad hints are pruned (out-of-range indices,
+self-references, cycles) rather than failing the ring, so an honest guess is better than
+omitting the field.
 
 ### What you must not do
 

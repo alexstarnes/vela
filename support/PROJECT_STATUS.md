@@ -50,12 +50,14 @@ What's left is the follow-up list in §5.
 | `src/app/` | Next.js App Router. `(app)` route group: projects, tasks (Kanban + list, `@hello-pangea/dnd`), agents, scheduler, activity (SSE feed), skills, settings, orchestration-model (renders `support/AGENT_ORCHESTRATION_V2.md`). 14 API routes: auth, heartbeat trigger, SSE stream, GitHub OAuth (connect/callback/repos/branches/refresh), helper proxy, model configs, dev-server control, approvals. |
 | `src/lib/mastra/` | **Product runtime.** `index.ts` (Mastra singleton, `agents: {}` — agents are built dynamically per heartbeat, not statically registered), `agent-factory.ts` (442 lines — builds a configured Mastra Agent per invocation), `heartbeat.ts` (979 lines — atomic checkout, budget, loop detection, approval gating), `router.ts` (601 lines — Ollama→CLI→API failover), `scheduler.ts` (176 lines — node-cron + stale-lock cleanup), plus `agents/` (5 definitions), `tools/`, `workflows/` (3 workflows, 13 step files), `evals/`, `analytics/`. |
 | `src/lib/orchestration/` | Deterministic policy layer, no AI calls: mode classification (4-axis scoring), workflow selection, model-selection, task-shape (execution policy), verification-policy, implementation-audit, cli-lane (cooldown tracking), escalation, routing-tuning, playbook-loader, template-injector, low-risk-discovery. Has its own test suite (4 files). |
-| `src/lib/db/` | Drizzle schema, 7 migrations (`0000`–`0006`), `seed.ts`. |
+| `src/lib/db/` | Drizzle schema, 11 migrations (`0000`–`0010`), `seed.ts`. `0010` adds `task_dependencies` (backlog ordering as data). |
 | `src/lib/actions/` | Server actions (agents, approvals, model-configs, projects, skills, tasks), all Zod-validated. |
 | `src/lib/governance/` | `budget.ts` (atomic spend, 80%/100% thresholds, monthly reset), `loop-detector.ts` (SHA-256 tool-call signature tracking). |
 | `src/lib/helper/client.ts` | HTTP client for the helper bridge — file IO, git, shell, CLI execution, dev-server control. |
 | `src/lib/events/logger.ts` | Writes `task_events`; SSE clients pick it up via 2s DB polling (see §5). |
 | `src/lib/auth/`, `src/lib/security/`, `src/lib/github/`, `src/lib/tasks/state-machine.ts` | Session cookie auth, AES-256-GCM token encryption, GitHub OAuth, task status transitions — all implemented, no stubs found. |
+| `src/lib/workspace/branch-lifecycle.ts` | Branch-per-task lifecycle: quarantine a dirty tree, run on `vela/task-<id8>`, commit on review-pass, squash-merge on approve, plus the workspace-health query behind the project flight view. |
+| `src/lib/tasks/dependency-graph.ts` / `dependencies.ts` | Backlog ordering: `depends_on` hint validation (drops out-of-range/self/cyclic hints), topological layering for the flight view, and the `task_dependencies` persistence the checkout gate reads. Pure half is split out so it unit-tests without a DB. |
 | `src/mastra/` | **Deleted** in `a35fb7b`. If any older doc or memory references it as a "studio scaffold to ignore," that's now moot — it no longer exists. |
 
 ---
@@ -77,9 +79,9 @@ What's left is the follow-up list in §5.
 
 Everything in the previous version of this list was resolved by the 2026-08-21 completion run (load testing done, governance exercised live, GitHub-clone-through-helper verified E2E, env gaps were a stale audit — secrets live in `.env.local`). The current list is the follow-ups filed in `BUILD_LOG.md`'s final report:
 
-1. **Workspace hygiene between tasks (systemic):** a child task whose work never passes review leaves uncommitted edits in the shared project workspace; the next task's audit/reviewer see the leftovers as part of *their* diff. Fix: per-task branch or a clean-tree gate on the workflow path (the legacy path already branches per task).
-2. **Backlog dependency ordering:** synthesizer-generated stories presume code that only sibling stories create; the pipeline doesn't sequence them. Either add dependency hints to the synthesizer output or sequence manually for now.
-3. **Two children parked at `waiting_for_human`** for operator triage: empty-states (real work, 5 honest review rejections at the requeue limit) and duplicate-detection (blocked on sibling save/import stories).
+1. ~~**Workspace hygiene between tasks (systemic)**~~ — **fixed 2026-08-22** by workstream A of `ORCHESTRATION_HARDENING_PLAN.md`. Every code workflow now quarantines a dirty tree to `vela/quarantine/<stamp>` (never discards), runs on `vela/task-<id8>`, commits on review-pass and returns the tree to base, and squash-merges into base on operator approve. Per-project serialization stops two tasks sharing a working tree. Verified end-to-end against a real git repo (`tests/workspace/branch-lifecycle.ts`).
+2. ~~**Backlog dependency ordering**~~ — **fixed 2026-08-22** by workstream B. The synthesizer emits `depends_on` indices, approval writes `task_dependencies` edges, and checkout eligibility is computed from those edges every time (`tests/governance/dependency-ordering.ts`). **Still to do by the operator:** retro-fit Clipper's existing 18 children with `scripts/propose-task-dependencies.ts` and prune the graph in the project flight view before enabling any cron.
+3. **Two children parked at `waiting_for_human`** for operator triage: empty-states (real work, 5 honest review rejections at the requeue limit) and duplicate-detection (blocked on sibling save/import stories — the case workstream B now prevents recurring).
 4. Budget-warning latch: re-warns on every heartbeat while in the 80–100% band; should fire once per crossing.
 5. mode_selection UI renders "score undefined/8" for product-mode rows (cosmetic).
 6. Richer strategist signal test on the CLI lane — the week-3 no-repeat test passed, but all three weeks returned reasoned `nothing_new` (the seat had been diverted to qwen by a since-fixed router bug).
@@ -93,13 +95,20 @@ Two `return null` branches (`verification-policy.ts:94`, `implementation-audit.t
 ## 6. Test & build health (verified this session)
 
 ```
-npx tsc --noEmit        → clean, 0 errors (re-verified after the completion run)
-npm run test:unit       → 27/27 pass
-tests/governance/*      → all pass (budget, loop, containment, recovery, concurrency)
-tests/load/*            → all pass (checkout under load, SSE burst)
-tests/ring/*            → independence + phase8 acceptance pass
-tests/discord/*         → handler auth (negative + positive) pass
+npx tsc --noEmit        → clean, 0 errors (re-verified 2026-08-22)
+npm run build           → clean
+npm run test:unit       → 45/45 pass (18 new: backlog ordering + execution layering)
+tests/workspace/*       → branch-lifecycle passes (real git repo + real helper)
+tests/governance/*      → dependency-ordering + the pure-DB budget/loop exercises pass;
+                          the server-dependent ones (containment, loop-detection,
+                          budget-thresholds, run-budget, stale-lock) not re-run on 2026-08-22
+tests/load/*            → checkout-contention passes, now also asserting per-project
+                          serialization; sse-under-load not re-run
+tests/ring/*            → independence + phase8 acceptance pass (2026-08-21)
+tests/discord/*         → handler auth (negative + positive) pass (2026-08-21)
 ```
+
+`tests/workspace/branch-lifecycle.ts` and the governance/load scripts need `npm run dev:helper` and/or `npm run dev` running — each prints what it needs and exits rather than failing obscurely.
 
 ---
 
@@ -155,10 +164,16 @@ aba205e "Initial commit from Mastra"
 
 ## 10. Suggested next actions
 
-**The plan for the top structural items now lives in [`support/ORCHESTRATION_HARDENING_PLAN.md`](ORCHESTRATION_HARDENING_PLAN.md)** (2026-08-22): workstream A = workspace hygiene (branch-per-task lifecycle, quarantine, merge-on-approve, per-project serialization), B = backlog dependency ordering (synthesizer `depends_on` → `task_dependencies` table → checkout gate), C = project-level flight view (in-flight strip + topological execution plan). Its §D refinements (distinct approval labels; per-project "begin implementation on backlog approval" toggle, default off) are already built.
+**[`support/ORCHESTRATION_HARDENING_PLAN.md`](ORCHESTRATION_HARDENING_PLAN.md) is built** (workstreams A, B, C on 2026-08-22; §D earlier the same day). Its build record documents what shipped, the two places the build corrected the plan, and the verification evidence.
 
-Beyond that plan, in rough priority order:
+In rough priority order:
 
-1. Triage the parked children (empty-states, duplicate-detection) when convenient.
-2. Enable the strategist's weekly cron on the Agents UI when ready for standing surveillance (deliberately left off per the no-self-execution seed invariant).
-3. Remaining cosmetics: budget-warning once-per-crossing latch, Discord card button disable on finalize.
+1. **Finish VERIFY C — the one piece of that plan still open.** Retro-fit dependency edges onto Clipper's 18 open children and prune the graph before enabling any cron:
+   ```
+   npx tsx scripts/propose-task-dependencies.ts --parent <prd-task-id> --dry-run
+   ```
+   then re-run without `--dry-run`, and review the layers on the project page (each "after:" chip has a delete control).
+2. Triage the parked children (empty-states, duplicate-detection) when convenient. Note the shared tree they left dirty will now be quarantined to a branch by the next run rather than leaking into it.
+3. Enable the strategist's weekly cron on the Agents UI when ready for standing surveillance (deliberately left off per the no-self-execution seed invariant).
+4. Remaining cosmetics: budget-warning once-per-crossing latch, Discord card button disable on finalize.
+5. Phase 2 of workspace hygiene if within-project parallelism is ever wanted: git *worktrees* instead of per-project serialization (more helper surface, dev-server path ambiguity, cleanup lifecycle — nothing needs it today).

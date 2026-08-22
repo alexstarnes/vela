@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { ArrowRight, FileText, GitCompareArrows } from 'lucide-react';
 import { getWorkspaceGitDiff } from '@/lib/helper/client';
+import { resolveBaseBranch, taskBranchName } from '@/lib/workspace/branch-lifecycle';
 import type { TaskDocumentSummary } from '@/lib/documents';
+import type { Project } from '@/lib/db/schema';
 
 interface ReviewEventLike {
   eventType: string;
@@ -19,21 +21,27 @@ interface ApprovalLike {
 /**
  * "What you're reviewing" — rendered only while the task sits at `review`.
  * The status controls in the header decide; this panel shows the deliverable
- * so the decision is informed: document revisions for product tasks, the live
- * workspace diff for code tasks, and the reviewer/verification verdicts.
+ * so the decision is informed: document revisions for product tasks, the task
+ * branch's diff for code tasks, and the reviewer/verification verdicts.
+ *
+ * The diff is `git diff <base>...vela/task-<id8>` rather than the working
+ * tree, so the operator reviews exactly and only this task's work — a shared
+ * tree carrying a neighbour's leftovers cannot pollute the decision. It falls
+ * back to the working-tree diff when the branch does not exist (a project
+ * predating the branch lifecycle, or a commit that could not be made).
  */
 export async function ReviewPanel({
   taskId,
   documents,
   approvals,
   events,
-  workspacePath,
+  project,
 }: {
   taskId: string;
   documents: TaskDocumentSummary[];
   approvals: ApprovalLike[];
   events: ReviewEventLike[];
-  workspacePath: string | null;
+  project: Pick<Project, 'workspacePath' | 'defaultBranch'> | null;
 }) {
   const latestOf = (type: string) =>
     [...events].reverse().find((e) => e.eventType === type)?.payload as
@@ -45,15 +53,35 @@ export async function ReviewPanel({
   const audit = latestOf('implementation_audit');
   const changedFiles = Array.isArray(audit?.changedFiles) ? (audit.changedFiles as string[]) : [];
 
-  // Live workspace diff for code tasks — best-effort: the helper may be down
-  // or the workspace already cleaned; the audit summary still renders.
+  // Best-effort: the helper may be down or the branch already merged; the
+  // audit summary still renders.
+  const workspacePath = project?.workspacePath ?? null;
   let workspaceDiff: string | null = null;
+  let diffLabel = 'workspace diff';
   if (workspacePath && changedFiles.length > 0) {
+    const branch = taskBranchName(taskId);
     try {
-      const { stdout } = await getWorkspaceGitDiff({ workspacePath });
-      workspaceDiff = stdout.trim() ? stdout : null;
+      const baseBranch = await resolveBaseBranch(project!);
+      const { stdout } = await getWorkspaceGitDiff({
+        workspacePath,
+        baseRef: baseBranch,
+        headRef: branch,
+      });
+      if (stdout.trim()) {
+        workspaceDiff = stdout;
+        diffLabel = `diff of ${branch} against ${baseBranch}`;
+      }
     } catch {
-      workspaceDiff = null;
+      // No task branch (pre-lifecycle project, or the commit failed) —
+      // fall back to the live tree so the operator still sees something.
+    }
+    if (!workspaceDiff) {
+      try {
+        const { stdout } = await getWorkspaceGitDiff({ workspacePath });
+        workspaceDiff = stdout.trim() ? stdout : null;
+      } catch {
+        workspaceDiff = null;
+      }
     }
   }
 
@@ -139,7 +167,7 @@ export async function ReviewPanel({
                 style={{ color: '#F5A623' }}
               >
                 <GitCompareArrows size={11} />
-                <span className="group-hover:underline">View workspace diff</span>
+                <span className="group-hover:underline">View {diffLabel}</span>
               </summary>
               <pre
                 className="mt-2 overflow-x-auto rounded-lg border p-3 text-[10px] leading-4 font-mono max-h-96 overflow-y-auto"
@@ -177,7 +205,8 @@ export async function ReviewPanel({
 
       <p className="mt-3 text-[10px] leading-4" style={{ color: 'var(--stone-500)' }}>
         Use the header controls to decide: <strong style={{ color: 'var(--stone-300)' }}>Approve</strong>{' '}
-        marks the task done · <strong style={{ color: 'var(--stone-300)' }}>Request changes</strong>{' '}
+        squash-merges this task&rsquo;s branch into the base branch and marks it done ·{' '}
+        <strong style={{ color: 'var(--stone-300)' }}>Request changes</strong> keeps the branch and
         sends it back to the agent.
       </p>
     </div>

@@ -10,7 +10,7 @@ import type { TaskStatus } from '@/lib/tasks/state-machine';
 const NEXT_TRANSITIONS: Record<TaskStatus, { to: TaskStatus; label: string }[]> = {
   backlog: [{ to: 'open', label: 'Open' }, { to: 'cancelled', label: 'Cancel' }],
   // "Run agent" is a separate control — it invokes the heartbeat, not a bare status transition.
-  open: [{ to: 'cancelled', label: 'Cancel' }],
+  open: [{ to: 'backlog', label: 'Back to backlog' }, { to: 'cancelled', label: 'Cancel' }],
   in_progress: [
     { to: 'review', label: '→ Review' },
     { to: 'waiting_for_human', label: 'Wait for input' },
@@ -26,7 +26,9 @@ const NEXT_TRANSITIONS: Record<TaskStatus, { to: TaskStatus; label: string }[]> 
   done: [{ to: 'cancelled', label: 'Cancel' }],
   waiting_for_human: [{ to: 'in_progress', label: 'Resume' }, { to: 'cancelled', label: 'Cancel' }],
   blocked: [{ to: 'open', label: 'Unblock' }, { to: 'cancelled', label: 'Cancel' }],
-  cancelled: [],
+  // Reopening parks the task in backlog rather than open, so an assigned agent
+  // does not immediately pick up work the operator only just un-cancelled.
+  cancelled: [{ to: 'backlog', label: 'Reopen' }],
 };
 
 interface Props {
@@ -97,12 +99,16 @@ export function TaskStatusControls({ task, agents: _agents, approveLabel }: Prop
                 ? '#3D8B5C20'
                 : t.to === 'cancelled'
                 ? '#C4413A20'
+                : currentStatus === 'cancelled'
+                ? '#4A7AB520'
                 : 'var(--dark-surface2)',
             color:
               t.to === 'done'
                 ? '#3D8B5C'
                 : t.to === 'cancelled'
                 ? '#C4413A'
+                : currentStatus === 'cancelled'
+                ? '#4A7AB5'
                 : 'var(--stone-400)',
             opacity: isPending ? 0.6 : 1,
             border: '1px solid var(--dark-border)',

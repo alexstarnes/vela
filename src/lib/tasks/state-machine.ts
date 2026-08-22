@@ -8,10 +8,14 @@
 // in_progress → blocked
 // review → done
 // review → in_progress
+// review → waiting_for_human (approve hit a merge conflict — needs a human)
 // waiting_for_human → open
 // waiting_for_human → in_progress
 // blocked → open
+// open → backlog (pull work back off the queue without cancelling it)
 // Any → cancelled
+// cancelled → backlog / open (cancel is reversible — an operator who cancels
+//   by mistake, or changes their mind, should not have to recreate the task)
 
 export type TaskStatus =
   | 'backlog'
@@ -34,13 +38,21 @@ export type TaskStatus =
 
 const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   backlog: ['open', 'cancelled'],
-  open: ['in_progress', 'cancelled'],
+  // backlog: de-queueing an open task is not the same as cancelling it — the
+  // work is still wanted, just not now, and an agent must stop picking it up.
+  open: ['in_progress', 'backlog', 'cancelled'],
   in_progress: ['review', 'waiting_for_human', 'open', 'blocked', 'cancelled'],
-  review: ['done', 'in_progress', 'cancelled'],
+  // waiting_for_human: approving a task squash-merges its branch into base;
+  // a merge conflict is an honest failure that parks the task for a human
+  // rather than reporting a merge that did not happen.
+  review: ['done', 'in_progress', 'waiting_for_human', 'cancelled'],
   done: ['cancelled'],
   waiting_for_human: ['open', 'in_progress', 'cancelled'],
   blocked: ['open', 'cancelled'],
-  cancelled: [],
+  // Reopening lands in backlog by default (see the UI): a cancelled task
+  // dropped straight into `open` would be picked up by its assigned agent on
+  // the next heartbeat, which is rarely what "undo that cancel" means.
+  cancelled: ['backlog', 'open'],
 };
 
 export function isValidTransition(from: TaskStatus, to: TaskStatus): boolean {

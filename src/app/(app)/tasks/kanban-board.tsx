@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useCallback, useTransition } from 'react';
+import { useState, useCallback, useEffect, useMemo, useTransition } from 'react';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import { transitionTask } from '@/lib/actions/tasks';
 import Link from 'next/link';
 import { isValidTransition, type TaskStatus } from '@/lib/tasks/state-machine';
 import { LayoutGrid, List, AlertCircle } from 'lucide-react';
+import { BulkTaskActionBar, TaskSelectBox, useTaskSelection, type TaskSelection } from './task-selection';
 
 // ─── Constants ─────────────────────────────────────────────────────
 
@@ -64,9 +65,18 @@ interface KanbanBoardProps {
 
 // ─── Task Card ─────────────────────────────────────────────────────
 
-function TaskCard({ task, index }: { task: Task; index: number }) {
+function TaskCard({
+  task,
+  index,
+  selection,
+}: {
+  task: Task;
+  index: number;
+  selection: TaskSelection;
+}) {
   const sc = STATUS_COLORS[task.status] ?? STATUS_COLORS.backlog;
   const priColor = PRIORITY_COLORS[task.priority] ?? '#6B665A';
+  const selected = selection.isSelected(task.id);
 
   return (
     <Draggable draggableId={task.id} index={index}>
@@ -82,14 +92,27 @@ function TaskCard({ task, index }: { task: Task; index: number }) {
             <div
               className="rounded-md p-2.5 cursor-pointer transition-all"
               style={{
-                background: snapshot.isDragging ? 'var(--dark-surface2)' : 'var(--dark-surface)',
-                border: `1px solid ${snapshot.isDragging ? '#F5A62360' : 'var(--dark-border)'}`,
+                background: snapshot.isDragging
+                  ? 'var(--dark-surface2)'
+                  : selected
+                  ? '#F5A62310'
+                  : 'var(--dark-surface)',
+                border: `1px solid ${
+                  snapshot.isDragging ? '#F5A62360' : selected ? '#F5A62360' : 'var(--dark-border)'
+                }`,
                 boxShadow: snapshot.isDragging ? '0 4px 12px rgba(0,0,0,0.4)' : 'none',
                 opacity: snapshot.isDragging ? 0.95 : 1,
               }}
             >
               <div className="flex items-start justify-between gap-1.5 mb-1.5">
-                <p className="text-[11px] font-medium leading-tight" style={{ color: '#ECEAE4' }}>
+                <div className="mt-0.5">
+                  <TaskSelectBox
+                    checked={selected}
+                    onToggle={(e) => selection.toggle(task.id, e)}
+                    label={`Select task ${task.title}`}
+                  />
+                </div>
+                <p className="flex-1 text-[11px] font-medium leading-tight" style={{ color: '#ECEAE4' }}>
                   {task.title}
                 </p>
                 <span
@@ -133,16 +156,25 @@ function TaskCard({ task, index }: { task: Task; index: number }) {
 
 // ─── List Row ──────────────────────────────────────────────────────
 
-function TaskListRow({ task }: { task: Task }) {
+function TaskListRow({ task, selection }: { task: Task; selection: TaskSelection }) {
   const sc = STATUS_COLORS[task.status] ?? STATUS_COLORS.backlog;
   const priColor = PRIORITY_COLORS[task.priority] ?? '#6B665A';
+  const selected = selection.isSelected(task.id);
 
   return (
     <Link href={`/tasks/${task.id}`}>
       <div
         className="flex items-center gap-3 px-4 py-2.5 border-b hover:bg-[var(--dark-surface2)] transition-colors"
-        style={{ borderColor: 'var(--dark-border)' }}
+        style={{
+          borderColor: 'var(--dark-border)',
+          background: selected ? '#F5A62310' : undefined,
+        }}
       >
+        <TaskSelectBox
+          checked={selected}
+          onToggle={(e) => selection.toggle(task.id, e)}
+          label={`Select task ${task.title}`}
+        />
         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: priColor }} />
         <p className="flex-1 text-[11px] font-medium" style={{ color: '#ECEAE4' }}>
           {task.title}
@@ -173,6 +205,16 @@ function TaskListRow({ task }: { task: Task }) {
 export function KanbanBoard({ tasks: initialTasks, agents, projects }: KanbanBoardProps) {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [view, setView] = useState<'board' | 'list'>('board');
+
+  // Local state exists for optimistic drag-and-drop, but it must not outlive
+  // the server's view of the world — a bulk cancel calls router.refresh() and
+  // the new statuses arrive as fresh props.
+  const initialSignature = initialTasks.map((t) => `${t.id}:${t.status}`).join(',');
+  useEffect(() => {
+    setTasks(initialTasks);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSignature]);
+
   const [filterAgentId, setFilterAgentId] = useState<string>('');
   const [filterProjectId, setFilterProjectId] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
@@ -192,6 +234,22 @@ export function KanbanBoard({ tasks: initialTasks, agents, projects }: KanbanBoa
     },
     {} as Record<string, Task[]>
   );
+
+  // Shift-click extends over what is actually on screen: board order runs
+  // column by column, list order is the filtered list itself. Cancelled /
+  // blocked / waiting tasks have no board column, so they are list-only.
+  const visibleTasks = useMemo(
+    () =>
+      view === 'board'
+        ? COLUMNS.flatMap((col) => tasksByStatus[col.status] ?? [])
+        : filteredTasks,
+    // tasksByStatus/filteredTasks are derived fresh each render; the signature
+    // below is what actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [view, filteredTasks.map((t) => `${t.id}:${t.status}`).join(',')]
+  );
+
+  const selection = useTaskSelection(useMemo(() => visibleTasks.map((t) => t.id), [visibleTasks]));
 
   const onDragEnd = useCallback(
     async (result: DropResult) => {
@@ -333,11 +391,17 @@ export function KanbanBoard({ tasks: initialTasks, agents, projects }: KanbanBoa
         <div className="flex-1 overflow-auto">
           {/* List header */}
           <div
-            className="grid grid-cols-4 gap-3 px-4 py-1.5 text-[9px] font-mono uppercase tracking-wider border-b"
+            className="flex items-center gap-3 px-4 py-1.5 text-[9px] font-mono uppercase tracking-wider border-b"
             style={{ background: 'var(--dark-surface2)', borderColor: 'var(--dark-border)', color: 'var(--stone-500)' }}
           >
-            <span>Title</span>
-            <span>Project</span>
+            <TaskSelectBox
+              checked={selection.allSelected}
+              indeterminate={selection.anySelected && !selection.allSelected}
+              onToggle={selection.selectAll}
+              label={selection.allSelected ? 'Deselect all tasks' : 'Select all tasks'}
+            />
+            <span className="flex-1">Title</span>
+            <span className="hidden sm:block">Project</span>
             <span>Agent</span>
             <span>Status</span>
           </div>
@@ -347,7 +411,9 @@ export function KanbanBoard({ tasks: initialTasks, agents, projects }: KanbanBoa
               <p className="text-xs" style={{ color: 'var(--stone-500)' }}>Try clearing the filters above</p>
             </div>
           ) : (
-            filteredTasks.map((task) => <TaskListRow key={task.id} task={task} />)
+            filteredTasks.map((task) => (
+              <TaskListRow key={task.id} task={task} selection={selection} />
+            ))
           )}
         </div>
       ) : (
@@ -383,7 +449,7 @@ export function KanbanBoard({ tasks: initialTasks, agents, projects }: KanbanBoa
                         }}
                       >
                         {colTasks.map((task, index) => (
-                          <TaskCard key={task.id} task={task} index={index} />
+                          <TaskCard key={task.id} task={task} index={index} selection={selection} />
                         ))}
                         {provided.placeholder}
                         {colTasks.length === 0 && !snapshot.isDraggingOver && (
@@ -403,6 +469,12 @@ export function KanbanBoard({ tasks: initialTasks, agents, projects }: KanbanBoa
           </div>
         </DragDropContext>
       )}
+
+      <BulkTaskActionBar
+        selection={selection}
+        totalVisible={visibleTasks.length}
+        statusById={Object.fromEntries(tasks.map((t) => [t.id, t.status]))}
+      />
     </div>
   );
 }
