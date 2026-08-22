@@ -49,6 +49,8 @@ export async function logTaskEvent(params: LogEventParams) {
     costUsd: costUsd ?? null,
   });
 
-  // Stub SSE emitter — Phase 4 will wire up real-time push
+  // SSE delivery: /api/events/stream serves these rows to clients by polling the
+  // task_events table every 2s, with last-event-id reconnect. Not a real-time
+  // push — fine unless latency becomes an actual complaint.
   console.log(`[task_event] task=${taskId} type=${eventType}`, payload ?? '');
 }

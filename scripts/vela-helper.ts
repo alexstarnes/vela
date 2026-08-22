@@ -376,6 +376,43 @@ function runProcessWithTimeout(
   );
 }
 
+interface ClaudeResultJson {
+  is_error?: boolean;
+  result?: string;
+  total_cost_usd?: number;
+  num_turns?: number;
+  duration_ms?: number;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
+/**
+ * Extract the result JSON from `claude -p --output-format json` stdout.
+ * The result is a single JSON line, but the CLI can print warning lines
+ * before or after it (e.g. MCP "Client.listTools()" notices), so a bare
+ * JSON.parse of the whole stream is not reliable.
+ */
+function parseClaudeResultJson(stdout: string): ClaudeResultJson | null {
+  const trimmed = stdout.trim();
+  try {
+    return JSON.parse(trimmed) as ClaudeResultJson;
+  } catch {
+    // Fall through to line-by-line scan.
+  }
+  for (const line of trimmed.split('\n').reverse()) {
+    const candidate = line.trim();
+    if (!candidate.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(candidate) as ClaudeResultJson & { type?: string };
+      if (parsed.type === 'result' || 'result' in parsed || 'is_error' in parsed) {
+        return parsed;
+      }
+    } catch {
+      // Not the result line — keep scanning.
+    }
+  }
+  return null;
+}
+
 /** Classify CLI failures so the router can distinguish caps from real errors. */
 function classifyCliFailure(output: string): 'usage_limit' | 'auth' | null {
   const lower = output.toLowerCase();
@@ -493,15 +530,9 @@ async function executeCli(params: {
   }
 
   if (params.cli === 'claude') {
-    try {
-      const parsed = JSON.parse(result.stdout) as {
-        is_error?: boolean;
-        result?: string;
-        total_cost_usd?: number;
-        num_turns?: number;
-        duration_ms?: number;
-        usage?: { input_tokens?: number; output_tokens?: number };
-      };
+    const parsedResult = parseClaudeResultJson(result.stdout);
+    if (parsedResult) {
+      const parsed = parsedResult;
       const failure =
         result.exitCode !== 0 || parsed.is_error
           ? classifyCliFailure(`${parsed.result ?? ''}\n${combinedOutput}`) ?? 'error'
@@ -523,9 +554,8 @@ async function executeCli(params: {
         numTurns: parsed.num_turns ?? null,
         durationMs: parsed.duration_ms ?? null,
       };
-    } catch {
-      // Fall through to the generic handling below when JSON parsing fails.
     }
+    // No parseable result JSON — fall through to the generic handling below.
   }
 
   // codex exec --json emits a JSONL event stream; extract the final agent
