@@ -66,22 +66,29 @@ async function runStage() {
   const cookie = await login();
   const prdMarkdown = readFileSync(PRD_FIXTURE, 'utf8');
 
-  const [task] = await db
-    .insert(tasks)
-    .values({
-      title: 'Clipper v1 PRD — critique ring',
-      description:
-        'Product requirements for Clipper v1. Carries the PRD document; routes to the critique ring, not the build pipeline.',
-      projectId,
-      assignedAgentId: supervisor!.id,
-      priority: 'high',
-      status: 'open',
-    })
-    .returning();
+  let task;
+  if (stage === 'assert' && argTaskId) {
+    // Assert-only re-entry: reuse the existing PRD task; the (possibly fixed)
+    // workflow re-runs on the same document, reusing valid prior submissions.
+    task = (await db.query.tasks.findFirst({ where: eq(tasks.id, argTaskId) }))!;
+  } else {
+    [task] = await db
+      .insert(tasks)
+      .values({
+        title: 'Clipper v1 PRD — critique ring',
+        description:
+          'Product requirements for Clipper v1. Carries the PRD document; routes to the critique ring, not the build pipeline.',
+        projectId,
+        assignedAgentId: supervisor!.id,
+        priority: 'high',
+        status: 'open',
+      })
+      .returning();
+    await appendDocumentRevision({ taskId: task.id, key: PRD_DOCUMENT_KEY, contentMd: prdMarkdown });
+  }
   console.log(`PRD_TASK_ID=${task.id}`);
 
-  await appendDocumentRevision({ taskId: task.id, key: PRD_DOCUMENT_KEY, contentMd: prdMarkdown });
-
+  const triggeredAt = new Date().toISOString();
   await triggerHeartbeatForTask(cookie, task.id);
 
   const finalStatus = await waitFor(
@@ -90,10 +97,11 @@ async function runStage() {
       if (!row) return null;
       if (['waiting_for_human', 'blocked'].includes(row.status)) return row.status;
       if (row.status === 'open' && row.lockedBy === null) {
+        // Only errors from THIS run count — prior attempts leave stale rows.
         const errors = await db.query.taskEvents.findMany({
           where: (e, { and: andOp, eq: eqOp }) => andOp(eqOp(e.taskId, task.id), eqOp(e.eventType, 'error')),
         });
-        if (errors.length > 0) return 'open-with-errors';
+        if (errors.some((e) => e.createdAt.toISOString() > triggeredAt)) return 'open-with-errors';
       }
       return null;
     },
@@ -321,7 +329,7 @@ async function childStage() {
   process.exit(pass ? 0 : 1);
 }
 
-const stages: Record<string, () => Promise<void>> = { run: runStage, approve: approveStage, child: childStage };
+const stages: Record<string, () => Promise<void>> = { run: runStage, assert: runStage, approve: approveStage, child: childStage };
 (stages[stage] ?? (() => { throw new Error(`Unknown stage ${stage}`); }))().catch((e) => {
   console.error(e);
   process.exit(1);

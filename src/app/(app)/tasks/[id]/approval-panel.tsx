@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckCircle, XCircle } from 'lucide-react';
+import { CheckCircle, XCircle, ArrowRight } from 'lucide-react';
 import { approveApproval, rejectApproval } from '@/lib/actions/approvals';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 interface Approval {
   id: string;
@@ -83,6 +84,14 @@ export function ApprovalPanel({ approvals: initialApprovals, taskId }: ApprovalP
                 )}
               </div>
             )}
+            <Link
+              href={`/approvals/${approval.id}`}
+              className="flex items-center gap-1 text-[10px] font-mono mb-1.5 underline"
+              style={{ color: '#F5A623' }}
+            >
+              Review before deciding
+              <ArrowRight size={10} />
+            </Link>
             <div className="flex gap-1.5">
               <button
                 onClick={() => handleApprove(approval.id)}

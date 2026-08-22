@@ -146,6 +146,10 @@ Return your complete submission as ONE fenced json code block and nothing else a
 }
 \`\`\`
 
+File at most 12 findings — prioritize the most consequential; fold or omit minor nits rather
+than diluting the list. The synthesizer must account for every finding you file, so volume has
+a real reconciliation cost.
+
 Set "contaminated": true if another reviewer's findings were somehow present in this context.`;
 
 export function buildRingReviewerContext(params: {
@@ -365,6 +369,10 @@ export async function invokeRingSeat(params: {
   prompt: string;
   taskId: string;
   stepId: string;
+  /** Override for seats whose single response is long (synthesizer). */
+  timeoutMs?: number;
+  /** Big-output seats should fall back to cloud, not a slow local model. */
+  fallbackPreference?: 'local-first' | 'cloud-first';
 }): Promise<RingSeatResult> {
   // Judgment seats are pinned to their configured lane (the CLI subscription
   // lane per the plan) — the router's local-first preference must not divert
@@ -388,7 +396,7 @@ export async function invokeRingSeat(params: {
         prompt: params.prompt,
         model: cliModelFlagForModelId(cliModelId),
         maxTurns: 12,
-        timeoutMs: RING_CLI_TIMEOUT_MS,
+        timeoutMs: params.timeoutMs ?? RING_CLI_TIMEOUT_MS,
         allowedTools: [],
         permissionMode: 'default',
       });
@@ -446,7 +454,7 @@ export async function invokeRingSeat(params: {
 
   // Fallback: the agent's own non-CLI model access — local lane first, then
   // metered cloud (with real cost accounting) as the lane of last resort.
-  const fallback = await resolveRingFallbackModel(params.agentRow);
+  const fallback = await resolveRingFallbackModel(params.agentRow, params.fallbackPreference ?? 'local-first');
   if (!fallback) {
     throw new Error(
       `Ring seat ${params.agentRow.name}: ${attemptedCli ? 'CLI lane failed and ' : ''}no non-CLI fallback model is accessible`,
@@ -467,7 +475,7 @@ export async function invokeRingSeat(params: {
     // The synthesizer must re-emit the whole revised PRD inside the JSON
     // block, so the ceiling has to be generous.
     modelSettings: { maxOutputTokens: 16384 },
-    abortSignal: AbortSignal.timeout(RING_CLI_TIMEOUT_MS),
+    abortSignal: AbortSignal.timeout(params.timeoutMs ?? RING_CLI_TIMEOUT_MS),
   });
 
   const usage = response.usage as { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined;
@@ -511,7 +519,10 @@ export async function invokeRingSeat(params: {
   };
 }
 
-async function resolveRingFallbackModel(agentRow: DbAgent) {
+async function resolveRingFallbackModel(
+  agentRow: DbAgent,
+  preference: 'local-first' | 'cloud-first' = 'local-first',
+) {
   const accessRows = await db
     .select({ modelConfigId: agentModelAccess.modelConfigId })
     .from(agentModelAccess)
@@ -525,11 +536,11 @@ async function resolveRingFallbackModel(agentRow: DbAgent) {
     ),
   });
 
-  // Local first; metered cloud only as the lane of last resort.
-  const ordered = [
-    ...configs.filter((config) => config.provider === 'ollama'),
-    ...configs.filter((config) => config.provider !== 'ollama' && config.provider !== 'cli'),
-  ];
+  const local = configs.filter((config) => config.provider === 'ollama');
+  const cloud = configs.filter((config) => config.provider !== 'ollama' && config.provider !== 'cli');
+  // Local first by default (free); cloud-first for seats whose long single
+  // response would crawl on a local model.
+  const ordered = preference === 'cloud-first' ? [...cloud, ...local] : [...local, ...cloud];
 
   for (const config of ordered) {
     const resolved = await resolveModel(config.id, undefined, agentRow.id);

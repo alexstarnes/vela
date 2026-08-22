@@ -15,7 +15,7 @@ import { db } from '@/lib/db';
 import { projects, tasks } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { logTaskEvent } from '@/lib/events/logger';
-import { appendDocumentRevision, getLatestDocument, PRD_DOCUMENT_KEY } from '@/lib/documents';
+import { appendDocumentRevision, getLatestDocument, listDocumentRevisions, PRD_DOCUMENT_KEY } from '@/lib/documents';
 import { createApprovalRequest } from '@/lib/actions/approvals';
 import { ringReviewerNames } from '@/lib/mastra/agents';
 import {
@@ -54,6 +54,9 @@ const ringLoadedSchema = ringInputSchema.extend({
   ringPhase: z.enum(['run', 'already_approved', 'gate_pending']),
   prdMarkdown: z.string(),
   prdRevision: z.number(),
+  /** Operator notes from a rejected synthesis of this revision — routed to
+   *  the synthesizer so "reject with feedback" is a real revision loop. */
+  rejectionFeedback: z.string().nullable(),
   usage: usageSchema,
 });
 
@@ -137,11 +140,43 @@ const loadPrdStep = createStep({
           ? ('already_approved' as const)
           : ('run' as const);
 
+    // Rejected synthesis of the CURRENT latest revision: the operator wants a
+    // different synthesis, not a fresh review. Re-run against the revision the
+    // reviewers actually reviewed (their cached submissions apply) and hand
+    // their feedback to the synthesizer.
+    let prdMarkdown = prd.contentMd;
+    let prdRevision = prd.revision;
+    let rejectionFeedback: string | null = null;
+    if (ringPhase === 'run' && latestApproval?.status === 'rejected' && coversCurrentRevision) {
+      const reviewedRevision = (latestApproval.payload as { reviewed_revision?: number } | null)
+        ?.reviewed_revision;
+      if (typeof reviewedRevision === 'number') {
+        const reviewedDoc = (await listDocumentRevisions(task.id, PRD_DOCUMENT_KEY)).find(
+          (doc) => doc.revision === reviewedRevision,
+        );
+        if (reviewedDoc) {
+          prdMarkdown = reviewedDoc.contentMd;
+          prdRevision = reviewedDoc.revision;
+          rejectionFeedback = latestApproval.reviewerNotes ?? null;
+          await logTaskEvent({
+            taskId: task.id,
+            agentId: inputData.agentId,
+            eventType: 'message',
+            payload: {
+              role: 'system',
+              content: `Previous synthesis (rev ${prd.revision}) was rejected by the operator — re-synthesizing revision ${reviewedRevision} with their feedback. Reviewer findings are reused.`,
+            },
+          });
+        }
+      }
+    }
+
     return {
       ...inputData,
       ringPhase,
-      prdMarkdown: prd.contentMd,
-      prdRevision: prd.revision,
+      prdMarkdown,
+      prdRevision,
+      rejectionFeedback,
       usage: { totalTokens: 0, totalCostUsd: '0.000000' },
     };
   },
@@ -168,6 +203,40 @@ async function runOneReviewer(params: {
   const project = task.projectId
     ? ((await db.query.projects.findFirst({ where: eq(projects.id, task.projectId) })) ?? null)
     : null;
+
+  // Resumable ring: a schema-valid submission already logged for this exact
+  // PRD revision is reused instead of re-spending the seat (e.g. when a
+  // later step failed and the heartbeat requeued the task).
+  const priorEvents = await db.query.taskEvents.findMany({
+    where: (e, { and: andOp, eq: eqOp }) =>
+      andOp(eqOp(e.taskId, params.taskId), eqOp(e.eventType, 'ring_findings')),
+    orderBy: (e, { desc }) => [desc(e.createdAt)],
+  });
+  for (const prior of priorEvents) {
+    const payload = prior.payload as {
+      reviewer?: string;
+      prd_revision?: number;
+      lane?: string;
+      model?: string;
+      submission?: unknown;
+    } | null;
+    if (payload?.reviewer !== params.reviewerName || payload?.prd_revision !== params.prdRevision) {
+      continue;
+    }
+    try {
+      const submission = reviewerSubmissionSchema.parse(payload.submission);
+      console.log(`[ring] reusing prior submission from ${params.reviewerName} for revision ${params.prdRevision}`);
+      return {
+        submission: { ...submission, reviewer: params.reviewerName },
+        lane: payload.lane ?? 'cached',
+        model: payload.model ?? 'cached',
+        totalTokens: 0,
+        totalCostUsd: '0.000000',
+      };
+    } catch {
+      // Invalid prior submission — fall through to a fresh run.
+    }
+  }
 
   const roleSkillMd = await loadRingSkill(RING_ROLE_SKILL_BY_AGENT[params.reviewerName], 'role');
 
@@ -227,6 +296,7 @@ async function runOneReviewer(params: {
         eventType: 'ring_findings',
         payload: {
           reviewer: params.reviewerName,
+          prd_revision: params.prdRevision,
           lane,
           model,
           attempt,
@@ -330,7 +400,7 @@ const ringSynthesizeStep = createStep({
       loadRingSkill(CRITIQUE_PROTOCOL_SKILL_NAME, 'protocol'),
     ]);
 
-    const baseContext = buildSynthesizerContext({
+    let baseContext = buildSynthesizerContext({
       roleSkillMd,
       protocolMd,
       prdMarkdown: inputData.prdMarkdown,
@@ -338,6 +408,26 @@ const ringSynthesizeStep = createStep({
       task,
       project,
       submissions: inputData.submissions,
+    });
+    if (inputData.rejectionFeedback) {
+      baseContext +=
+        `\n\n## Operator feedback on your previous synthesis (it was REJECTED)\n` +
+        `${inputData.rejectionFeedback}\n` +
+        `Your previous synthesis of this revision was rejected. Address this feedback directly — ` +
+        `it outranks your own prior judgment wherever the two conflict. State in the relevant ` +
+        `reconciliation reasons how the feedback changed the outcome.`;
+    }
+
+    // The synthesizer is one long single-shot call with no interim tool
+    // events — announce it so the activity feed doesn't read as hung.
+    await logTaskEvent({
+      taskId: inputData.taskId,
+      agentId: agentRow.id,
+      eventType: 'message',
+      payload: {
+        role: 'system',
+        content: `Synthesizer started: reconciling ${allFindingRefs(inputData.submissions).length} findings from ${inputData.submissions.length} reviewers and drafting the revised PRD. Single long model call — up to 20 minutes with no intermediate events.`,
+      },
     });
 
     let totalTokens = inputData.usage.totalTokens;
@@ -352,6 +442,11 @@ const ringSynthesizeStep = createStep({
         prompt,
         taskId: inputData.taskId,
         stepId: 'ring-synthesize',
+        // Reconciling every finding plus re-emitting the whole PRD is one
+        // long response — give it room, and never fall back to a slow local
+        // model for output this size.
+        timeoutMs: 20 * 60 * 1000,
+        fallbackPreference: 'cloud-first',
       });
       totalTokens += seat.totalTokens;
       totalCostUsd += parseFloat(seat.totalCostUsd);

@@ -42,13 +42,17 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
+  type ModalSubmitInteraction,
   type Message,
   type MessageCreateOptions,
 } from 'discord.js';
 import { db } from '@/lib/db';
-import { agents, tasks } from '@/lib/db/schema';
+import { agents, approvals, tasks } from '@/lib/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 
 // Env is loaded by ./bot-env (first import) so @/lib/db sees it at load time.
@@ -509,23 +513,63 @@ async function postApprovalRequest(ev: TaskEventPayload, payload: Record<string,
   }
 
   const description = String(payload.description ?? 'No description provided.');
+  const reviewUrl = `${APP_URL}/approvals/${approvalId}`;
 
   const embed = new EmbedBuilder()
     .setTitle('Approval requested')
-    .setDescription(truncate(description, 4000))
+    .setDescription(truncate(`${description}\n\n[Open the full review →](${reviewUrl})`, 4000))
     .addFields({ name: 'Task', value: `\`${ev.taskId}\`` })
     .setColor(0xfee75c)
     .setFooter({ text: `task:${ev.taskId}` })
     .setTimestamp(new Date());
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+  // Enrich from the approval row so the operator sees WHAT they are deciding:
+  // the escalated judgment calls and the size of the proposed backlog.
+  try {
+    const row = await db.query.approvals.findFirst({ where: eq(approvals.id, approvalId) });
+    const p = row?.payload as {
+      backlog?: unknown[];
+      escalations?: Array<{ conflict?: string }>;
+      prd_revision?: number;
+      reviewed_revision?: number;
+    } | null;
+    if (p?.escalations?.length) {
+      embed.addFields({
+        name: `Escalated to you (${p.escalations.length})`,
+        value: truncate(
+          p.escalations
+            .slice(0, 3)
+            .map((e, i) => `${i + 1}. ${e.conflict ?? '(unstated conflict)'}`)
+            .join('\n'),
+          1024,
+        ),
+      });
+    }
+    if (p?.backlog) {
+      embed.addFields({
+        name: 'Proposed backlog',
+        value: `${p.backlog.length} item(s)` +
+          (p.prd_revision != null ? ` · PRD rev ${p.reviewed_revision ?? '?'} → ${p.prd_revision}` : ''),
+        inline: true,
+      });
+    }
+  } catch (err) {
+    console.warn('[approval] could not enrich card from DB:', err instanceof Error ? err.message : err);
+  }
+
+  const decideRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`vela-approve:${approvalId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`vela-reject:${approvalId}`).setLabel('Reject').setStyle(ButtonStyle.Danger),
+  );
+  const feedbackRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`vela-approve-fb:${approvalId}`).setLabel('Approve with feedback…').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`vela-reject-fb:${approvalId}`).setLabel('Reject with feedback…').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setURL(reviewUrl).setLabel('Review page').setStyle(ButtonStyle.Link),
   );
 
   // Approval requests are the actionable, rate-sensitive surface — always sent
   // immediately, never subject to the activity/errors coalescing queue.
-  await sendToChannel(DISCORD_CHANNEL_APPROVALS, { embeds: [embed], components: [row] });
+  await sendToChannel(DISCORD_CHANNEL_APPROVALS, { embeds: [embed], components: [decideRow, feedbackRow] });
 }
 
 // ─── 7. Discord → Vela ──────────────────────────────────────────────
@@ -548,9 +592,57 @@ async function reportUnauthorized(context: string, user: { id: string; tag: stri
 
 const UNAUTHORIZED_MESSAGE = 'You are not authorized to act on Vela approvals.';
 
+/** Shared decision executor for buttons and feedback modals. */
+async function executeApprovalDecision(params: {
+  decision: 'approve' | 'reject';
+  approvalId: string;
+  user: { id: string; username: string; tag: string };
+  feedback?: string;
+}): Promise<{ ok: boolean; detail: string }> {
+  const notes = params.feedback
+    ? `${truncate(params.feedback, 850)} — via Discord by ${params.user.username} (${params.user.id})`
+    : `via Discord by ${params.user.username} (${params.user.id})`;
+
+  let res: Response;
+  try {
+    res = await velaFetch(`/api/approvals/${params.approvalId}/${params.decision}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviewerNotes: notes }),
+    });
+  } catch (err) {
+    return { ok: false, detail: `Failed to reach Vela: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return { ok: false, detail: `Could not ${params.decision}: ${body.error ?? `HTTP ${res.status}`}` };
+  }
+  return { ok: true, detail: params.decision === 'approve' ? '✅ Approved' : '❌ Rejected' };
+}
+
+/** Edit the original card: append the outcome, drop the buttons. */
+async function finalizeApprovalCard(
+  message: ButtonInteraction['message'] | null,
+  outcomeLine: string,
+): Promise<void> {
+  if (!message) return;
+  try {
+    const originalEmbed = message.embeds[0];
+    const updatedEmbed = originalEmbed
+      ? EmbedBuilder.from(originalEmbed).setDescription(
+          truncate(`${originalEmbed.description ?? ''}\n\n${outcomeLine}`.trim(), 4000),
+        )
+      : new EmbedBuilder().setDescription(outcomeLine);
+    await message.edit({ embeds: [updatedEmbed], components: [] });
+  } catch (err) {
+    console.error('[discord] failed to update approval message:', err);
+  }
+}
+
 async function handleApprovalButton(interaction: ButtonInteraction): Promise<void> {
   const [action, approvalId] = interaction.customId.split(':');
-  if ((action !== 'vela-approve' && action !== 'vela-reject') || !approvalId) return;
+  if (!approvalId) return;
 
   if (!isOperator(interaction.user.id)) {
     await reportUnauthorized(`approval ${approvalId}`, interaction.user);
@@ -558,50 +650,81 @@ async function handleApprovalButton(interaction: ButtonInteraction): Promise<voi
     return;
   }
 
+  // Feedback variants open a text-input modal; showModal IS the 3s ack.
+  if (action === 'vela-approve-fb' || action === 'vela-reject-fb') {
+    const decision = action === 'vela-approve-fb' ? 'approve' : 'reject';
+    const modal = new ModalBuilder()
+      .setCustomId(`vela-modal:${decision}:${approvalId}`)
+      .setTitle(decision === 'approve' ? 'Approve with feedback' : 'Reject with feedback')
+      .addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(
+          new TextInputBuilder()
+            .setCustomId('feedback')
+            .setLabel(
+              decision === 'approve'
+                ? 'Feedback (recorded on the approval)'
+                : 'What should change? (routed to the synthesizer)',
+            )
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+            .setMaxLength(800),
+        ),
+      );
+    await interaction.showModal(modal);
+    return;
+  }
+
+  if (action !== 'vela-approve' && action !== 'vela-reject') return;
   const decision = action === 'vela-approve' ? 'approve' : 'reject';
-  const notes = `via Discord by ${interaction.user.username} (${interaction.user.id})`;
 
-  let res: Response;
-  try {
-    res = await velaFetch(`/api/approvals/${approvalId}/${decision}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reviewerNotes: notes }),
-    });
-  } catch (err) {
-    await interaction.reply({
-      content: `Failed to reach Vela: ${err instanceof Error ? err.message : String(err)}`,
-      ephemeral: true,
-    });
+  // Ack within Discord's 3-second window BEFORE the Vela round trip —
+  // interaction.update() after a slow POST is why earlier cards kept their
+  // buttons after a decision.
+  await interaction.deferUpdate();
+
+  const result = await executeApprovalDecision({
+    decision,
+    approvalId,
+    user: interaction.user,
+  });
+
+  if (!result.ok) {
+    await interaction.followUp({ content: result.detail, ephemeral: true });
     return;
   }
 
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    await interaction.reply({
-      content: `Could not ${decision} approval: ${body.error ?? `HTTP ${res.status}`}`,
-      ephemeral: true,
-    });
+  const outcomeLine = `${result.detail} by ${interaction.user.tag}`;
+  await finalizeApprovalCard(interaction.message, outcomeLine);
+  await interaction.followUp({ content: `${outcomeLine}.`, ephemeral: true });
+}
+
+async function handleApprovalModal(interaction: ModalSubmitInteraction): Promise<void> {
+  const [prefix, decision, approvalId] = interaction.customId.split(':');
+  if (prefix !== 'vela-modal' || (decision !== 'approve' && decision !== 'reject') || !approvalId) return;
+
+  if (!isOperator(interaction.user.id)) {
+    await reportUnauthorized(`approval ${approvalId} (modal)`, interaction.user);
+    await interaction.reply({ content: UNAUTHORIZED_MESSAGE, ephemeral: true });
     return;
   }
 
-  const label = decision === 'approve' ? '✅ Approved' : '❌ Rejected';
-  const tag = interaction.user.tag;
+  await interaction.deferReply({ ephemeral: true });
+  const feedback = interaction.fields.getTextInputValue('feedback');
+  const result = await executeApprovalDecision({
+    decision: decision as 'approve' | 'reject',
+    approvalId,
+    user: interaction.user,
+    feedback,
+  });
 
-  try {
-    const originalEmbed = interaction.message.embeds[0];
-    const updatedEmbed = originalEmbed
-      ? EmbedBuilder.from(originalEmbed).setDescription(
-          truncate(`${originalEmbed.description ?? ''}\n\n${label} by ${tag}`.trim(), 4000),
-        )
-      : new EmbedBuilder().setDescription(`${label} by ${tag}`);
-
-    await interaction.update({ embeds: [updatedEmbed], components: [] });
-  } catch (err) {
-    console.error('[discord] failed to update approval message:', err);
+  if (!result.ok) {
+    await interaction.editReply(result.detail);
+    return;
   }
 
-  await interaction.followUp({ content: `${label} by ${tag}.`, ephemeral: true });
+  const outcomeLine = `${result.detail} with feedback by ${interaction.user.tag}`;
+  await finalizeApprovalCard(interaction.isFromMessage() ? interaction.message : null, outcomeLine);
+  await interaction.editReply(`${outcomeLine}.`);
 }
 
 async function handleSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -760,8 +883,14 @@ discordClient.on(Events.InteractionCreate, (interaction) => {
   void (async () => {
     try {
       if (interaction.isButton()) {
-        if (interaction.customId.startsWith('vela-approve:') || interaction.customId.startsWith('vela-reject:')) {
+        if (/^vela-(approve|reject)(-fb)?:/.test(interaction.customId)) {
           await handleApprovalButton(interaction);
+        }
+        return;
+      }
+      if (interaction.isModalSubmit()) {
+        if (interaction.customId.startsWith('vela-modal:')) {
+          await handleApprovalModal(interaction);
         }
         return;
       }
