@@ -488,16 +488,23 @@ async function generateImplementationWithFallback(params: {
             ])
           : telemetry.abortSignal;
 
-      const response = await activeAgent.agent.generate(params.prompt, {
-        maxSteps: params.maxSteps,
-        modelSettings: {
-          maxOutputTokens: params.maxOutputTokens,
-          ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
-        },
-        onStepFinish: telemetry.onStepFinish,
-        onIterationComplete: telemetry.onIterationComplete,
-        abortSignal,
-      });
+      let response;
+      try {
+        response = await activeAgent.agent.generate(params.prompt, {
+          maxSteps: params.maxSteps,
+          modelSettings: {
+            maxOutputTokens: params.maxOutputTokens,
+            ...(params.temperature !== undefined ? { temperature: params.temperature } : {}),
+          },
+          onStepFinish: telemetry.onStepFinish,
+          onIterationComplete: telemetry.onIterationComplete,
+          abortSignal,
+        });
+      } finally {
+        // Disarm the wall-clock timer the moment generation ends — a
+        // fire-after-completion logs a ghost timeout for a finished run.
+        telemetry.complete();
+      }
       telemetry.throwIfLoopDetected();
       const stepUsage = telemetry.getUsageTotals();
       usageTotals = {

@@ -27,18 +27,20 @@ const EDIT_TOOL_NAMES = new Set(['write_workspace_file', 'apply_diff']);
  * whether the aborted generate() returns partial output or throws.
  */
 export async function generateWithLoopCheck<T>(
-  telemetry: { throwIfLoopDetected: () => void },
+  telemetry: { throwIfLoopDetected: () => void; complete?: () => void },
   generate: () => Promise<T>,
 ): Promise<T> {
-  let result: T;
   try {
-    result = await generate();
+    const result = await generate();
+    telemetry.throwIfLoopDetected();
+    return result;
   } catch (error) {
     telemetry.throwIfLoopDetected();
     throw error;
+  } finally {
+    // Disarm containment timers — the generation is over either way.
+    telemetry.complete?.();
   }
-  telemetry.throwIfLoopDetected();
-  return result;
 }
 
 export function createWorkflowStepTelemetry(params: {
@@ -86,11 +88,16 @@ export function createWorkflowStepTelemetry(params: {
   let loopError: LoopDetectedError | null = null;
 
   // Wall-clock containment: a non-terminating agent loop is aborted at the
-  // boundary regardless of tokens or iterations.
+  // boundary regardless of tokens or iterations. The timer MUST be disarmed
+  // when the generation ends — a fire-after-completion is a ghost timeout
+  // event for a run that finished fine (this spammed #errors in production).
   let wallClockStopReason: string | null = null;
+  let finished = false;
+  let wallClockTimer: NodeJS.Timeout | null = null;
   const wallClockMs = params.maxWallClockMs ?? DEFAULT_STEP_WALL_CLOCK_MS;
   if (wallClockMs > 0) {
-    const timer = setTimeout(() => {
+    wallClockTimer = setTimeout(() => {
+      if (finished || controller.signal.aborted) return;
       wallClockStopReason = `Wall-clock ceiling reached after ${wallClockMs}ms in step ${params.stepId}.`;
       void logTaskEvent({
         taskId: params.taskId,
@@ -106,11 +113,19 @@ export function createWorkflowStepTelemetry(params: {
       });
       controller.abort();
     }, wallClockMs);
-    timer.unref?.();
+    wallClockTimer.unref?.();
   }
 
   return {
     abortSignal: controller.signal,
+    /** Disarm containment timers — call when the generation has ended. */
+    complete() {
+      finished = true;
+      if (wallClockTimer) {
+        clearTimeout(wallClockTimer);
+        wallClockTimer = null;
+      }
+    },
     async onStepFinish(stepEvent: unknown) {
       const step = (stepEvent ?? {}) as StepLike;
       iteration += 1;
